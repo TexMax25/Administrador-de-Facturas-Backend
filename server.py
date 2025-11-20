@@ -28,6 +28,13 @@ if not secret_key:
     raise RuntimeError("SECRET_KEY environment variable must be set for production security.")
 app.secret_key = secret_key
 
+app.config.update(
+    SESSION_COOKIE_SECURE=True,  # Solo HTTPS en producción
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='None',  # Permite cookies cross-site
+    SESSION_COOKIE_DOMAIN='.onrender.com'  # Para Render
+)
+
 CORS(app, origins=[
     "https://texmax25.github.io",  # Cambia esto
     "http://localhost:5000"  # Para desarrollo local
@@ -326,13 +333,14 @@ def auth_status():
 @app.route('/api/auth/login', methods=['GET'])
 def login():
     user_id = str(uuid.uuid4())
-    session['user_id'] = user_id
-    session['state'] = str(uuid.uuid4())
+    state = str(uuid.uuid4())
     
-    # ✅ URI fija según el entorno
-    if os.environ.get('RENDER'):  # En producción (Render)
+    # ✅ Guardar user_id y state temporalmente en memoria (o Redis en producción)
+    # Por ahora, los pasaremos en la URL de callback
+    
+    if os.environ.get('RENDER'):
         redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
-    else:  # En desarrollo local
+    else:
         redirect_uri = 'http://localhost:5000/api/auth/callback'
     
     flow = InstalledAppFlow.from_client_secrets_file(
@@ -341,10 +349,10 @@ def login():
         redirect_uri=redirect_uri
     )
     
-    authorization_url, state = flow.authorization_url(
+    authorization_url, _ = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',
-        state=session['state'],
+        state=f"{state}:{user_id}",  # ✅ Combinar state y user_id
         prompt='select_account'
     )
     
@@ -357,17 +365,19 @@ def login():
 @app.route('/api/auth/callback')
 def oauth_callback():
     """Callback de OAuth - recibe el código de autorización."""
-    state = request.args.get('state')
-    if state != session.get('state'):
+    
+    # ✅ Extraer state y user_id de los query params
+    state_param = request.args.get('state', '')
+    
+    try:
+        state, user_id = state_param.split(':', 1)
+    except ValueError:
         return jsonify({'error': 'Estado inválido'}), 400
     
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({'error': 'Sesión no encontrada'}), 400
-    
     code = request.args.get('code')
+    if not code:
+        return jsonify({'error': 'Código no recibido'}), 400
     
-    # ✅ Usar la misma URI fija
     if os.environ.get('RENDER'):
         redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
     else:
@@ -379,15 +389,26 @@ def oauth_callback():
         redirect_uri=redirect_uri
     )
     
-    flow.fetch_token(code=code)
-    creds = flow.credentials
+    try:
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        
+        # Guardar token del usuario
+        token_path = get_user_token_path(user_id)
+        with open(token_path, 'wb') as token:
+            pickle.dump(creds, token)
+        
+        # ✅ Crear sesión DESPUÉS de autenticar
+        session['user_id'] = user_id
+        
+        # Redirigir al frontend
+        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')   
+        return redirect(f'{frontend_url}?auth=success&user_id={user_id}')
     
-    token_path = get_user_token_path(user_id)
-    with open(token_path, 'wb') as token:
-        pickle.dump(creds, token)
-    
-    frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')   
-    return redirect(f'{frontend_url}?auth=success')
+    except Exception as e:
+        print(f"Error en OAuth: {e}")
+        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
+        return redirect(f'{frontend_url}?auth=error&message={str(e)}')
 
 
 @app.route('/api/auth/logout', methods=['POST'])
