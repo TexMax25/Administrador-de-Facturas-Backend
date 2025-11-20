@@ -9,6 +9,7 @@ import sys
 import io
 import pickle
 import re
+import secrets
 
 from pathlib import Path
 import uuid
@@ -55,6 +56,9 @@ runtime = None
 sheets_service = None
 calendar_service = None
 runtime_lock = Lock()
+
+# Diccionario temporal para guardar tokens (en producción usa Redis)
+user_sessions = {}
 
 _sheets_service_cache = None
 _calendar_service_cache = None
@@ -336,7 +340,9 @@ def login():
     user_id = str(uuid.uuid4())
     state = str(uuid.uuid4())
     
-    # ✅ Determinar redirect_uri según entorno
+    # Guardar temporalmente en memoria
+    user_sessions[state] = {'user_id': user_id, 'timestamp': datetime.now()}
+    
     if os.environ.get('RENDER'):
         redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
     else:
@@ -348,19 +354,14 @@ def login():
         redirect_uri=redirect_uri
     )
     
-    # ✅ Combinar state y user_id en un solo parámetro
-    combined_state = f"{state}:{user_id}"
-    
     authorization_url, _ = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',
-        state=combined_state,  # ✅ Pasar el state combinado
+        state=state,  # ✅ Solo el state
         prompt='select_account'
     )
     
     print(f"🔵 Login iniciado - User ID: {user_id}, State: {state}")
-    print(f"🔵 Combined state: {combined_state}")
-    print(f"🔵 Auth URL: {authorization_url}")
     
     return jsonify({
         'auth_url': authorization_url,
@@ -368,80 +369,41 @@ def login():
     })
 
 
-@app.route('/api/auth/callback')
-def oauth_callback():
-    """Callback de OAuth - recibe el código de autorización."""
+@app.route('/api/auth/status', methods=['GET'])
+def auth_status():
+    """Verifica si el usuario está autenticado usando token."""
+    # ✅ Obtener token del header Authorization
+    auth_header = request.headers.get('Authorization', '')
     
-    # ✅ Obtener el state combinado
-    state_param = request.args.get('state', '')
-    code = request.args.get('code')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({
+            'authenticated': False,
+            'message': 'No hay token'
+        })
     
-    print(f"🔵 Callback recibido - State param: {state_param}")
-    print(f"🔵 Code recibido: {code[:20]}..." if code else "❌ No code")
+    token = auth_header.replace('Bearer ', '')
+    session_data = user_sessions.get(token)
     
-    # ✅ Separar state y user_id
-    if ':' not in state_param:
-        print("❌ Error: State no tiene el formato correcto")
-        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
-        return redirect(f'{frontend_url}?auth=error&message=Estado+inválido')
+    if not session_data:
+        return jsonify({
+            'authenticated': False,
+            'message': 'Token inválido o expirado'
+        })
     
-    try:
-        state, user_id = state_param.split(':', 1)
-        print(f"✅ State separado - State: {state}, User ID: {user_id}")
-    except ValueError:
-        print("❌ Error al separar state y user_id")
-        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
-        return redirect(f'{frontend_url}?auth=error&message=Estado+inválido')
+    user_id = session_data['user_id']
+    creds = get_credentials(user_id)
     
-    if not code:
-        print("❌ Error: No se recibió código de autorización")
-        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
-        return redirect(f'{frontend_url}?auth=error&message=Código+no+recibido')
+    if not creds:
+        return jsonify({
+            'authenticated': False,
+            'message': 'Credenciales expiradas'
+        })
     
-    # ✅ Determinar redirect_uri (debe ser el mismo que en login)
-    if os.environ.get('RENDER'):
-        redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
-    else:
-        redirect_uri = 'http://localhost:5000/api/auth/callback'
-    
-    flow = InstalledAppFlow.from_client_secrets_file(
-        'credentials.json',
-        scopes=SCOPES,
-        redirect_uri=redirect_uri
-    )
-    
-    try:
-        print(f"🔵 Intercambiando código por token...")
-        flow.fetch_token(code=code)
-        creds = flow.credentials
-        
-        print(f"✅ Token obtenido exitosamente")
-        
-        # Guardar token del usuario
-        token_path = get_user_token_path(user_id)
-        with open(token_path, 'wb') as token:
-            pickle.dump(creds, token)
-        
-        print(f"✅ Token guardado en: {token_path}")
-        
-        # ✅ Crear sesión DESPUÉS de autenticar
-        session['user_id'] = user_id
-        print(f"✅ Sesión creada para user_id: {user_id}")
-        
-        # Redirigir al frontend
-        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
-        redirect_url = f'{frontend_url}?auth=success&user_id={user_id}'
-        print(f"✅ Redirigiendo a: {redirect_url}")
-        
-        return redirect(redirect_url)
-    
-    except Exception as e:
-        print(f"❌ Error en OAuth: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
-        return redirect(f'{frontend_url}?auth=error&message={str(e)}')
+    return jsonify({
+        'authenticated': True,
+        'user_id': user_id,
+        'message': 'Sesión activa'
+    })
 
 
 @app.route('/api/auth/logout', methods=['POST'])
@@ -465,13 +427,25 @@ def logout():
 @app.route('/api/chat', methods=['POST'])
 def chat():
     """Procesa mensajes del chat (requiere autenticación)."""
-    user_id = session.get('user_id')
+    # ✅ Obtener token del header
+    auth_header = request.headers.get('Authorization', '')
     
-    if not user_id:
+    if not auth_header.startswith('Bearer '):
         return jsonify({
             'success': False,
             'message': '❌ No estás autenticado. Por favor inicia sesión.'
         }), 401
+    
+    token = auth_header.replace('Bearer ', '')
+    session_data = user_sessions.get(token)
+    
+    if not session_data:
+        return jsonify({
+            'success': False,
+            'message': '❌ Tu sesión ha expirado. Por favor vuelve a iniciar sesión.'
+        }), 401
+    
+    user_id = session_data['user_id']
     
     # Verificar que el usuario tenga credenciales válidas
     sheets_service, calendar_service = create_google_services(user_id)
@@ -489,8 +463,7 @@ def chat():
         if not user_message:
             return jsonify({'success': False, 'message': '❌ Mensaje vacío'}), 400
         
-        # TODO: Aquí va tu lógica de procesamiento de mensajes
-        # Por ahora, respuesta de prueba
+        # TODO: Aquí va tu lógica de procesamiento
         result_text = f"✅ Mensaje recibido: {user_message}"
         result_html = None
         
