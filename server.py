@@ -1,5 +1,5 @@
 #server.py
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, session, url_for, redirect
 from flask_cors import CORS
 import asyncio
 import os
@@ -10,18 +10,37 @@ import io
 import pickle
 import re
 
+from pathlib import Path
+import uuid
+
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
 from autogen_core import AgentId, SingleThreadedAgentRuntime
 import main
 
 app = Flask(__name__)
+
+secret_key = os.environ.get('SECRET_KEY')
+if not secret_key:
+    raise RuntimeError("SECRET_KEY environment variable must be set for production security.")
+app.secret_key = secret_key
+
 CORS(app, origins=[
     "https://TexMax25.github.io",  # Cambia esto
     "http://localhost:5000"  # Para desarrollo local
 ])
+
+SCOPES = [
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/spreadsheets'
+]
+
+# Directorio para almacenar tokens de usuarios
+TOKENS_DIR = Path('user_tokens')
+TOKENS_DIR.mkdir(exist_ok=True)
 
 # Variables globales
 runtime = None
@@ -234,8 +253,178 @@ async def procesar_mensaje(user_input: str):
     return formatear_respuesta_procesada(user_input, console_output)
 
 
+def get_user_token_path(user_id):
+    """Obtiene la ruta del token para un usuario específico."""
+    return TOKENS_DIR / f'token_{user_id}.pickle'
+
+def get_credentials(user_id):
+    """Obtiene las credenciales de un usuario específico."""
+    token_path = get_user_token_path(user_id)
+    
+    creds = None
+    if token_path.exists():
+        with open(token_path, 'rb') as token:
+            creds = pickle.load(token)
+    
+    # Si las credenciales no son válidas, retornar None
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+                # Guardar credenciales actualizadas
+                with open(token_path, 'wb') as token:
+                    pickle.dump(creds, token)
+                return creds
+            except Exception as e:
+                print(f"Error al refrescar token: {e}")
+                return None
+        return None
+    
+    return creds
+
+def create_google_services(user_id):
+    """Crea los servicios de Google para un usuario."""
+    creds = get_credentials(user_id)
+    
+    if not creds:
+        return None, None
+    
+    try:
+        sheets_service = build('sheets', 'v4', credentials=creds)
+        calendar_service = build('calendar', 'v3', credentials=creds)
+        return sheets_service, calendar_service
+    except Exception as e:
+        print(f"Error al crear servicios: {e}")
+        return None, None
+
+
+@app.route('/api/auth/status', methods=['GET'])
+def auth_status():
+    """Verifica si el usuario está autenticado."""
+    user_id = session.get('user_id')
+    
+    if not user_id:
+        return jsonify({
+            'authenticated': False,
+            'message': 'No hay sesión activa'
+        })
+    
+    creds = get_credentials(user_id)
+    
+    if not creds:
+        return jsonify({
+            'authenticated': False,
+            'message': 'Token expirado o inválido'
+        })
+    
+    return jsonify({
+        'authenticated': True,
+        'user_id': user_id,
+        'message': 'Sesión activa'
+    })
+
+@app.route('/api/auth/login', methods=['GET'])
+def login():
+    """Inicia el flujo de OAuth de Google."""
+    # Generar ID único para este usuario
+    user_id = str(uuid.uuid4())
+    session['user_id'] = user_id
+    session['state'] = str(uuid.uuid4())
+    
+    # Configurar flujo OAuth
+    flow = InstalledAppFlow.from_client_secrets_file(
+        'credentials.json',
+        scopes=SCOPES,
+        redirect_uri=url_for('oauth_callback', _external=True)
+    )
+    
+    flow.redirect_uri = url_for('oauth_callback', _external=True)
+    
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true',
+        state=session['state']
+    )
+    
+    return jsonify({
+        'auth_url': authorization_url,
+        'user_id': user_id
+    })
+
+
+@app.route('/api/auth/callback')
+def oauth_callback():
+    """Callback de OAuth - recibe el código de autorización."""
+    # Verificar state para prevenir CSRF
+    state = request.args.get('state')
+    if state != session.get('state'):
+        return jsonify({'error': 'Estado inválido'}), 400
+    
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'Sesión no encontrada'}), 400
+    
+    # Obtener el código de autorización
+    code = request.args.get('code')
+    
+    # Intercambiar código por token
+    flow = InstalledAppFlow.from_client_secrets_file(
+        'credentials.json',
+        scopes=SCOPES,
+        redirect_uri=url_for('oauth_callback', _external=True)
+    )
+    
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    
+    # Guardar token del usuario
+    token_path = get_user_token_path(user_id)
+    with open(token_path, 'wb') as token:
+        pickle.dump(creds, token)
+    
+    # Redirigir al frontend
+    frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:5000')
+    return redirect(f'{frontend_url}?auth=success')
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def logout():
+    """Cierra la sesión del usuario."""
+    user_id = session.get('user_id')
+    
+    if user_id:
+        # Opcional: Eliminar el token del usuario
+        token_path = get_user_token_path(user_id)
+        if token_path.exists():
+            token_path.unlink()
+    
+    session.clear()
+    
+    return jsonify({
+        'success': True,
+        'message': 'Sesión cerrada'
+    })
+
 @app.route('/api/chat', methods=['POST'])
 def chat():
+    """Procesa mensajes del chat (requiere autenticación)."""
+    user_id = session.get('user_id')
+    
+    if not user_id:
+        return jsonify({
+            'success': False,
+            'message': '❌ No estás autenticado. Por favor inicia sesión.'
+        }), 401
+    
+    # Verificar que el usuario tenga credenciales válidas
+    sheets_service, calendar_service = create_google_services(user_id)
+    
+    if not sheets_service or not calendar_service:
+        return jsonify({
+            'success': False,
+            'message': '❌ Tu sesión ha expirado. Por favor vuelve a iniciar sesión.'
+        }), 401
+    
     try:
         data = request.json
         user_message = data.get('message', '').strip()
@@ -243,47 +432,48 @@ def chat():
         if not user_message:
             return jsonify({'success': False, 'message': '❌ Mensaje vacío'}), 400
         
-        with runtime_lock:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                result = loop.run_until_complete(procesar_mensaje(user_message))
-                if isinstance(result, tuple):
-                    text, html = result
-                else:
-                    text = result
-                    html = None
-            finally:
-                try:
-                    pending = asyncio.all_tasks(loop)
-                    for task in pending:
-                        task.cancel()
-                    if pending:
-                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                except:
-                    pass
-                try:
-                    loop.close()
-                except:
-                    pass
-                asyncio.set_event_loop(None)
+        # TODO: Aquí va tu lógica de procesamiento de mensajes
+        # Por ahora, respuesta de prueba
+        result_text = f"✅ Mensaje recibido: {user_message}"
+        result_html = None
         
-        return jsonify({'success': True, 'message': text, 'html': html})
+        return jsonify({
+            'success': True,
+            'message': result_text,
+            'html': result_html
+        })
+        
     except Exception as e:
         print(f"❌ Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'message': f'❌ Error: {str(e)}'}), 500
+        return jsonify({
+            'success': False,
+            'message': f'❌ Error: {str(e)}'
+        }), 500
+
 
 @app.route('/api/status', methods=['GET'])
 def status():
-    global runtime, sheets_service, calendar_service
+    """Estado del servidor."""
+    user_id = session.get('user_id')
+    
     return jsonify({
         'status': 'online',
-        'runtime_initialized': runtime is not None,
-        'sheets_connected': sheets_service is not None,
-        'calendar_connected': calendar_service is not None,
-        'spreadsheet_id': main.SPREADSHEET_ID if main.SPREADSHEET_ID != 'TU_ID_DE_HOJA_DE_CALCULO' else None
+        'authenticated': user_id is not None,
+        'user_id': user_id
+    })
+
+@app.route('/')
+def index():
+    return jsonify({
+        'message': 'Backend de Asistente de Pagos',
+        'version': '2.0',
+        'endpoints': {
+            'auth_status': '/api/auth/status',
+            'login': '/api/auth/login',
+            'logout': '/api/auth/logout',
+            'chat': '/api/chat',
+            'status': '/api/status'
+        }
     })
 
 if __name__ == '__main__':
