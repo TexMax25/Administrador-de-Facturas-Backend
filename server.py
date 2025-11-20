@@ -1,5 +1,5 @@
 #server.py
-from flask import Flask, request, jsonify, render_template_string, session, url_for, redirect
+from flask import Flask, request, jsonify, session, make_response
 from flask_cors import CORS
 import asyncio
 import os
@@ -47,9 +47,9 @@ SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets'
 ]
 
-# Directorio para almacenar tokens de usuarios
+# cambiar creación de directorio tokens para asegurar creación de padres
 TOKENS_DIR = Path('user_tokens')
-TOKENS_DIR.mkdir(exist_ok=True)
+TOKENS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Variables globales
 runtime = None
@@ -400,61 +400,114 @@ def logout():
         'message': 'Sesión cerrada'
     })
 
+@app.route('/api/auth/callback', methods=['GET'])
+def auth_callback():
+    """Callback OAuth de Google: intercambia code por credenciales y genera un token de sesión."""
+    state = request.args.get('state')
+    code = request.args.get('code')
+    if not state or not code:
+        return jsonify({'success': False, 'message': 'Parámetros inválidos'}), 400
+
+    session_data = user_sessions.get(state)
+    if not session_data:
+        return jsonify({'success': False, 'message': 'State inválido o expirado'}), 400
+
+    user_id = session_data['user_id']
+
+    if os.environ.get('RENDER'):
+        redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
+    else:
+        redirect_uri = 'http://localhost:5000/api/auth/callback'
+
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(
+            'credentials.json',
+            scopes=SCOPES,
+            redirect_uri=redirect_uri
+        )
+        # Usar authorization_response para fetch_token (asegura compatibilidad)
+        auth_resp = request.url
+        flow.fetch_token(authorization_response=auth_resp)
+
+        creds = flow.credentials
+        token_path = get_user_token_path(user_id)
+        with open(token_path, 'wb') as f:
+            pickle.dump(creds, f)
+
+        # Generar un token de sesión para usar como "Bearer" en llamadas API
+        access_token = secrets.token_urlsafe(32)
+        user_sessions[access_token] = {
+            'user_id': user_id,
+            'timestamp': datetime.now()
+        }
+
+        # Borra el state temporal para evitar confusión
+        if state in user_sessions:
+            del user_sessions[state]
+
+        # Responder con una página simple que muestra el token y recomienda copiarlo
+        html = f"""
+        <html><body>
+        <h3>Autenticación completada</h3>
+        <p>Copia este token y úsalo como header Authorization: Bearer &lt;token&gt; en el frontend:</p>
+        <pre style="word-break:break-all;background:#f5f5f5;padding:10px;border-radius:6px;">{access_token}</pre>
+        <p>Puedes cerrar esta ventana.</p>
+        </body></html>
+        """
+        response = make_response(html)
+        response.headers['Content-Type'] = 'text/html'
+        return response
+
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'No se encontró credentials.json'}), 500
+    except Exception as e:
+        print(f"Error en callback OAuth: {e}")
+        return jsonify({'success': False, 'message': f'Error interno: {str(e)}'}), 500
+
+# --- Reemplazar la lógica POST /api/chat para ejecutar el procesamiento real ---
+# Busca la función chat() actual y reemplázala por lo siguiente:
 @app.route('/api/chat', methods=['POST'])
 def chat():
     """Procesa mensajes del chat (requiere autenticación)."""
-    # ✅ Obtener token del header
     auth_header = request.headers.get('Authorization', '')
-    
     if not auth_header.startswith('Bearer '):
-        return jsonify({
-            'success': False,
-            'message': '❌ No estás autenticado. Por favor inicia sesión.'
-        }), 401
-    
+        return jsonify({'success': False, 'message': '❌ No estás autenticado. Por favor inicia sesión.'}), 401
+
     token = auth_header.replace('Bearer ', '')
     session_data = user_sessions.get(token)
-    
     if not session_data:
-        return jsonify({
-            'success': False,
-            'message': '❌ Tu sesión ha expirado. Por favor vuelve a iniciar sesión.'
-        }), 401
-    
+        return jsonify({'success': False, 'message': '❌ Tu sesión ha expirado. Por favor vuelve a iniciar sesión.'}), 401
+
     user_id = session_data['user_id']
-    
-    # Verificar que el usuario tenga credenciales válidas
+
+    # Verificar servicios Google (opcional)
     sheets_service, calendar_service = create_google_services(user_id)
-    
     if not sheets_service or not calendar_service:
-        return jsonify({
-            'success': False,
-            'message': '❌ Tu sesión ha expirado. Por favor vuelve a iniciar sesión.'
-        }), 401
-    
+        return jsonify({'success': False, 'message': '❌ No se encontraron credenciales válidas. Re-autentica.'}), 401
+
     try:
-        data = request.json
-        user_message = data.get('message', '').strip()
-        
+        data = request.json or {}
+        user_message = (data.get('message') or '').strip()
         if not user_message:
             return jsonify({'success': False, 'message': '❌ Mensaje vacío'}), 400
-        
-        # TODO: Aquí va tu lógica de procesamiento
-        result_text = f"✅ Mensaje recibido: {user_message}"
-        result_html = None
-        
+
+        # Ejecutar el procesamiento (procesar_mensaje es async)
+        result = asyncio.run(procesar_mensaje(user_message))
+        # procesar_mensaje devuelve (texto, html) en la mayoría de los casos
+        if isinstance(result, tuple) and len(result) >= 2:
+            result_text, result_html = result[0], result[1]
+        else:
+            result_text, result_html = str(result), None
+
         return jsonify({
             'success': True,
             'message': result_text,
             'html': result_html
         })
-        
+
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        return jsonify({
-            'success': False,
-            'message': f'❌ Error: {str(e)}'
-        }), 500
+        print(f"❌ Error: {e}")
+        return jsonify({'success': False, 'message': f'❌ Error: {str(e)}'}), 500
 
 
 @app.route('/api/status', methods=['GET'])
