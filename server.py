@@ -325,13 +325,10 @@ def auth_status():
 
 @app.route('/api/auth/login', methods=['GET'])
 def login():
-    """Inicia el flujo de OAuth de Google."""
-    # Generar ID único para este usuario
     user_id = str(uuid.uuid4())
     session['user_id'] = user_id
     session['state'] = str(uuid.uuid4())
     
-    # Configurar flujo OAuth
     flow = InstalledAppFlow.from_client_secrets_file(
         'credentials.json',
         scopes=SCOPES,
@@ -343,7 +340,8 @@ def login():
     authorization_url, state = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',
-        state=session['state']
+        state=session['state'],
+        prompt='select_account'  # ⬅️ AGREGA ESTA LÍNEA
     )
     
     return jsonify({
