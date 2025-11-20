@@ -329,19 +329,23 @@ def login():
     session['user_id'] = user_id
     session['state'] = str(uuid.uuid4())
     
+    # ✅ URI fija según el entorno
+    if os.environ.get('RENDER'):  # En producción (Render)
+        redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
+    else:  # En desarrollo local
+        redirect_uri = 'http://localhost:5000/api/auth/callback'
+    
     flow = InstalledAppFlow.from_client_secrets_file(
         'credentials.json',
         scopes=SCOPES,
-        redirect_uri=url_for('oauth_callback', _external=True)
+        redirect_uri=redirect_uri
     )
-    
-    flow.redirect_uri = url_for('oauth_callback', _external=True)
     
     authorization_url, state = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',
         state=session['state'],
-        prompt='select_account'  # ⬅️ AGREGA ESTA LÍNEA
+        prompt='select_account'
     )
     
     return jsonify({
@@ -353,7 +357,6 @@ def login():
 @app.route('/api/auth/callback')
 def oauth_callback():
     """Callback de OAuth - recibe el código de autorización."""
-    # Verificar state para prevenir CSRF
     state = request.args.get('state')
     if state != session.get('state'):
         return jsonify({'error': 'Estado inválido'}), 400
@@ -362,25 +365,27 @@ def oauth_callback():
     if not user_id:
         return jsonify({'error': 'Sesión no encontrada'}), 400
     
-    # Obtener el código de autorización
     code = request.args.get('code')
     
-    # Intercambiar código por token
+    # ✅ Usar la misma URI fija
+    if os.environ.get('RENDER'):
+        redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
+    else:
+        redirect_uri = 'http://localhost:5000/api/auth/callback'
+    
     flow = InstalledAppFlow.from_client_secrets_file(
         'credentials.json',
         scopes=SCOPES,
-        redirect_uri=url_for('oauth_callback', _external=True)
+        redirect_uri=redirect_uri
     )
     
     flow.fetch_token(code=code)
     creds = flow.credentials
     
-    # Guardar token del usuario
     token_path = get_user_token_path(user_id)
     with open(token_path, 'wb') as token:
         pickle.dump(creds, token)
     
-    # Redirigir al frontend
     frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')   
     return redirect(f'{frontend_url}?auth=success')
 
