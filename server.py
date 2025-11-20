@@ -310,30 +310,6 @@ def create_google_services(user_id):
         return None, None
 
 
-@app.route('/api/auth/status', methods=['GET'])
-def auth_status():
-    """Verifica si el usuario está autenticado."""
-    user_id = session.get('user_id')
-    
-    if not user_id:
-        return jsonify({
-            'authenticated': False,
-            'message': 'No hay sesión activa'
-        })
-    
-    creds = get_credentials(user_id)
-    
-    if not creds:
-        return jsonify({
-            'authenticated': False,
-            'message': 'Token expirado o inválido'
-        })
-    
-    return jsonify({
-        'authenticated': True,
-        'user_id': user_id,
-        'message': 'Sesión activa'
-    })
 
 @app.route('/api/auth/login', methods=['GET'])
 def login():
