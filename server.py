@@ -29,9 +29,9 @@ if not secret_key:
 app.secret_key = secret_key
 
 CORS(app, origins=[
-    "https://TexMax25.github.io",  # Cambia esto
+    "https://texmax25.github.io",  # Cambia esto
     "http://localhost:5000"  # Para desarrollo local
-])
+], supports_credentials=True)
 
 SCOPES = [
     'https://www.googleapis.com/auth/calendar',
@@ -383,7 +383,7 @@ def oauth_callback():
         pickle.dump(creds, token)
     
     # Redirigir al frontend
-    frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:5000')
+    frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')   
     return redirect(f'{frontend_url}?auth=success')
 
 
