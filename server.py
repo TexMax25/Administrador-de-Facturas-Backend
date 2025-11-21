@@ -14,6 +14,7 @@ import io
 import pickle
 import re
 import secrets
+from urllib.parse import quote_plus
 
 from pathlib import Path
 import uuid
@@ -479,13 +480,11 @@ def oauth_callback():
     # Detectar entorno
     is_local = not os.environ.get('RENDER')
     
-    # <-- CHANGED: construir redirect_uri dinámicamente para entorno local usando PORT
-    is_local = not os.environ.get('RENDER')
     if is_local:
-        port = os.environ.get('PORT', '5000')
-        redirect_uri = f'http://localhost:{port}/api/auth/callback'
+        redirect_uri = 'http://localhost:5000/api/auth/callback'
     else:
         redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
+    
     print(f"🔵 Usando redirect_uri: {redirect_uri}")
     
     try:
@@ -523,37 +522,11 @@ def oauth_callback():
         
         print(f"✅ Token de sesión creado: {session_token[:20]}...")
         
-        # Redirigir al frontend con el token
-        frontend_url = 'https://texmax25.github.io/Administrador-de-Facturas'
-        redirect_url = f'{frontend_url}?auth=success&token={session_token}'
-        
+        # Redirigir al frontend con el token (usar FRONTEND_URL si está definida)
+        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
+        redirect_url = f'{frontend_url}?auth=success&token={quote_plus(session_token)}'
         print(f"✅ Redirigiendo a: {redirect_url}")
-        
-        # Página de redirección automática con feedback visual
-        return f"""
-        <html>
-        <head>
-            <meta http-equiv="refresh" content="2;url={redirect_url}">
-        </head>
-        <body style="font-family: Arial; padding: 40px; background: #f5f5f5; text-align: center;">
-            <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
-                <h2 style="color: #28a745;">✅ Autenticación Exitosa</h2>
-                <p>Redirigiendo a la aplicación...</p>
-                <div style="margin: 30px 0;">
-                    <div style="display: inline-block; width: 50px; height: 50px; border: 5px solid #f3f3f3; border-top: 5px solid #667eea; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-                </div>
-                <p style="color: #666; font-size: 14px;">Si no eres redirigido automáticamente, 
-                <a href="{redirect_url}" style="color: #667eea;">haz clic aquí</a></p>
-            </div>
-            <style>
-                @keyframes spin {{
-                    0% {{ transform: rotate(0deg); }}
-                    100% {{ transform: rotate(360deg); }}
-                }}
-            </style>
-        </body>
-        </html>
-        """
+        return redirect(redirect_url)
     
     except Exception as e:
         print(f"❌ Error en OAuth: {e}")
