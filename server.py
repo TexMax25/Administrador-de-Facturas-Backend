@@ -3,8 +3,7 @@ from flask import Flask, request, jsonify, session, make_response, redirect
 from flask_cors import CORS
 import asyncio
 import os
-# <-- CHANGED: permitir OAUTHLIB_INSECURE_TRANSPORT en desarrollo/local (NO usar en producción)
-# Establecer esto muy pronto para evitar el error "(insecure_transport) OAuth 2 MUST utilize https."
+
 if os.environ.get('FLASK_ENV') == 'development' or os.environ.get('INSECURE_OAUTH') == '1' or not os.environ.get('RENDER'):
     os.environ.setdefault('OAUTHLIB_INSECURE_TRANSPORT', '1')
 from datetime import datetime
@@ -524,7 +523,7 @@ def oauth_callback():
         
         # Redirigir al frontend con el token (usar FRONTEND_URL si está definida)
         frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
-        redirect_url = f'{frontend_url}?auth=success&token={quote_plus(session_token)}'
+        redirect_url = f'{frontend_url}?auth=success&token={quote_plus(session_token)}' 
         print(f"✅ Redirigiendo a: {redirect_url}")
         return redirect(redirect_url)
     
