@@ -173,14 +173,13 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
     Persiste hasta 3 minutos intentando obtener respuesta.
     """
     
-    # 🔥 NUEVO: Modelos priorizados por disponibilidad
+    # 🔥 Modelos priorizados por disponibilidad
     MODELS_PRIORITY = [
-        "google/gemini-2.0-flash-exp:free",       # Gemini 2.0 (mejor límite)
-        "meta-llama/llama-3.2-3b-instruct:free",  # Llama 3.2 (ligero)
-        "microsoft/phi-3-mini-128k-instruct:free",# Phi-3 (rápido)
-        "qwen/qwen-2-7b-instruct:free",           # Qwen (español)
-        "anthropic/claude-3-haiku:free",          # Claude Haiku si disponible
-        "openai/gpt-3.5-turbo",                   # GPT 3.5 (backup)
+        "google/gemini-2.0-flash-exp:free",
+        "meta-llama/llama-3.2-3b-instruct:free",
+        "microsoft/phi-3-mini-128k-instruct:free",
+        "qwen/qwen-2-7b-instruct:free",
+        "anthropic/claude-3-haiku:free",
     ]
     
     payload_base = {
@@ -189,7 +188,7 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.0,
-        "max_tokens": 512,  # Reducido para respuestas más rápidas
+        "max_tokens": 512,
     }
     
     headers = {
@@ -200,7 +199,7 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
     }
     
     start_time = asyncio.get_event_loop().time()
-    max_total_time = 180  # 🔥 Hasta 3 minutos intentando
+    max_total_time = 180  # 3 minutos
     
     modelo_actual_idx = 0
     intento_global = 0
@@ -208,13 +207,11 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
     while (asyncio.get_event_loop().time() - start_time) < max_total_time:
         intento_global += 1
         
-        # Rotar entre modelos
         model_name = MODELS_PRIORITY[modelo_actual_idx % len(MODELS_PRIORITY)]
         payload = {**payload_base, "model": model_name}
         
-        # 🔥 Delay progresivo: más intentos = más espera
         if intento_global > 1:
-            delay = min(intento_global * 2, 30)  # Máximo 30 segundos
+            delay = min(intento_global * 2, 30)
             print(f"⏳ Esperando {delay}s antes de reintentar (intento {intento_global})...")
             await asyncio.sleep(delay)
         
@@ -226,57 +223,46 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
                     json=payload
                 )
             
-            # Verificar respuesta vacía
             if not response.content:
                 print(f"⚠️ {model_name}: Respuesta vacía")
                 modelo_actual_idx += 1
                 continue
             
-            # Rate limit - cambiar de modelo y continuar
             if response.status_code == 429:
-                print(f"⚠️ {model_name}: Rate limit alcanzado, probando otro modelo...")
+                print(f"⚠️ {model_name}: Rate limit, probando otro modelo...")
                 modelo_actual_idx += 1
                 continue
             
-            # Modelo no encontrado - siguiente
             if response.status_code == 404:
                 print(f"⚠️ {model_name}: No disponible")
                 modelo_actual_idx += 1
                 continue
             
-            # Error de autenticación - no tiene sentido seguir
             if response.status_code == 401:
-                return "ERROR: API Key inválida. Verifica tu key en main.py"
+                return "ERROR: API Key inválida"
             
-            # Servicio no disponible - reintentar mismo modelo
             if response.status_code == 503:
-                print(f"⚠️ {model_name}: Servicio temporalmente no disponible")
-                continue  # No cambiar modelo, reintentar
+                print(f"⚠️ {model_name}: Servicio no disponible")
+                continue
             
-            # Otro error HTTP - cambiar modelo
             if response.status_code != 200:
                 print(f"⚠️ {model_name}: HTTP {response.status_code}")
                 modelo_actual_idx += 1
                 continue
             
-            # Intentar parsear JSON
             try:
                 response_data = response.json()
             except json.JSONDecodeError:
-                if "<!DOCTYPE" in response.text or "<html" in response.text:
-                    return "ERROR: API Key inválida o expirada"
-                print(f"⚠️ {model_name}: Respuesta no es JSON")
+                print(f"⚠️ {model_name}: JSON inválido")
                 modelo_actual_idx += 1
                 continue
             
-            # Verificar estructura
             if 'choices' not in response_data or not response_data['choices']:
                 error_msg = response_data.get('error', {}).get('message', 'Sin detalles')
                 print(f"⚠️ {model_name}: {error_msg}")
                 modelo_actual_idx += 1
                 continue
             
-            # ¡ÉXITO!
             result = response_data['choices'][0]['message']['content'].strip()
             
             if intento_global > 1:
@@ -286,11 +272,11 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
             
         except httpx.TimeoutException:
             print(f"⏱️ {model_name}: Timeout")
-            continue  # Reintentar mismo modelo
+            continue
         
-        except httpx.RequestError as e:
+        except httpx.RequestError:
             print(f"⚠️ {model_name}: Error de red")
-            await asyncio.sleep(5)  # Esperar más en errores de red
+            await asyncio.sleep(5)
             continue
         
         except Exception as e:
@@ -298,11 +284,10 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
             modelo_actual_idx += 1
             continue
     
-    # Si llegamos aquí, se agotó el tiempo
     elapsed = int(asyncio.get_event_loop().time() - start_time)
     print(f"\n❌ No se pudo obtener respuesta después de {elapsed}s y {intento_global} intentos")
     
-    return "ERROR: Los servicios de IA están sobrecargados. Por favor intenta en 5-10 minutos."
+    return "ERROR: Los servicios de IA están sobrecargados. Intenta en 5-10 minutos."
     
 
 # --- 4. DEFINICIÓN DE AGENTES ---
