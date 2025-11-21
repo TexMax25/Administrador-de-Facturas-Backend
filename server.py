@@ -3,6 +3,10 @@ from flask import Flask, request, jsonify, session, make_response, redirect
 from flask_cors import CORS
 import asyncio
 import os
+# <-- CHANGED: permitir OAUTHLIB_INSECURE_TRANSPORT en desarrollo/local (NO usar en producción)
+# Establecer esto muy pronto para evitar el error "(insecure_transport) OAuth 2 MUST utilize https."
+if os.environ.get('FLASK_ENV') == 'development' or os.environ.get('INSECURE_OAUTH') == '1' or not os.environ.get('RENDER'):
+    os.environ.setdefault('OAUTHLIB_INSECURE_TRANSPORT', '1')
 from datetime import datetime
 from threading import Lock
 import sys
@@ -319,10 +323,12 @@ def login():
     # Guardar temporalmente en memoria
     user_sessions[state] = {'user_id': user_id, 'timestamp': datetime.now()}
     
+    # <-- CHANGED: construir redirect_uri dinámicamente para entorno local usando PORT
     if os.environ.get('RENDER'):
         redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
     else:
-        redirect_uri = 'http://localhost:5000/api/auth/callback'
+        port = os.environ.get('PORT', '5000')
+        redirect_uri = f'http://localhost:{port}/api/auth/callback'
     
     flow = InstalledAppFlow.from_client_secrets_file(
         'credentials.json',
@@ -473,11 +479,13 @@ def oauth_callback():
     # Detectar entorno
     is_local = not os.environ.get('RENDER')
     
+    # <-- CHANGED: construir redirect_uri dinámicamente para entorno local usando PORT
+    is_local = not os.environ.get('RENDER')
     if is_local:
-        redirect_uri = 'http://localhost:5000/api/auth/callback'
+        port = os.environ.get('PORT', '5000')
+        redirect_uri = f'http://localhost:{port}/api/auth/callback'
     else:
         redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
-    
     print(f"🔵 Usando redirect_uri: {redirect_uri}")
     
     try:
