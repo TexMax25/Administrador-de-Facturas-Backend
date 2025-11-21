@@ -1,5 +1,5 @@
 #server.py
-from flask import Flask, request, jsonify, session, make_response
+from flask import Flask, request, jsonify, session, make_response, redirect
 from flask_cors import CORS
 import asyncio
 import os
@@ -400,69 +400,179 @@ def logout():
         'message': 'Sesión cerrada'
     })
 
-@app.route('/api/auth/callback', methods=['GET'])
-def auth_callback():
-    """Callback OAuth de Google: intercambia code por credenciales y genera un token de sesión."""
-    state = request.args.get('state')
+@app.route('/api/auth/callback')
+def oauth_callback():
+    """Callback de OAuth - recibe el código de autorización."""
+    
+    state = request.args.get('state', '')
     code = request.args.get('code')
-    if not state or not code:
-        return jsonify({'success': False, 'message': 'Parámetros inválidos'}), 400
-
+    error = request.args.get('error')
+    
+    print(f"🔵 === CALLBACK RECIBIDO ===")
+    print(f"State: {state}")
+    print(f"Code: {code[:30] if code else 'None'}...")
+    print(f"Error: {error}")
+    
+    # Si hay error de Google
+    if error:
+        print(f"❌ Error de Google OAuth: {error}")
+        frontend_url = 'https://texmax25.github.io/Administrador-de-Facturas'
+        return redirect(f'{frontend_url}?auth=error&message={error}')
+    
+    # Recuperar user_id del diccionario temporal
     session_data = user_sessions.get(state)
+    
     if not session_data:
-        return jsonify({'success': False, 'message': 'State inválido o expirado'}), 400
-
+        print("❌ Error: State no encontrado en sesiones")
+        print(f"Estados disponibles: {list(user_sessions.keys())[:3]}")
+        
+        # Retornar HTML en lugar de redirect para ver el error
+        return f"""
+        <html>
+        <body style="font-family: Arial; padding: 40px; background: #f5f5f5;">
+            <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #dc3545;">❌ Error de Autenticación</h2>
+                <p><strong>Problema:</strong> Sesión expirada o inválida</p>
+                <p><strong>State recibido:</strong> {state}</p>
+                <p><strong>Estados activos:</strong> {len(user_sessions)}</p>
+                <hr>
+                <p>Por favor, intenta iniciar sesión nuevamente.</p>
+                <a href="https://texmax25.github.io/Administrador-de-Facturas" 
+                   style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
+                          background: #667eea; color: white; text-decoration: none; 
+                          border-radius: 5px;">
+                    🔙 Volver a la aplicación
+                </a>
+            </div>
+        </body>
+        </html>
+        """, 400
+    
     user_id = session_data['user_id']
-
-    if os.environ.get('RENDER'):
-        redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
-    else:
+    print(f"✅ User ID recuperado: {user_id}")
+    
+    if not code:
+        print("❌ Error: No se recibió código de autorización")
+        return f"""
+        <html>
+        <body style="font-family: Arial; padding: 40px; background: #f5f5f5;">
+            <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #dc3545;">❌ Error de Autenticación</h2>
+                <p><strong>Problema:</strong> No se recibió código de autorización</p>
+                <a href="https://texmax25.github.io/Administrador-de-Facturas" 
+                   style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
+                          background: #667eea; color: white; text-decoration: none; 
+                          border-radius: 5px;">
+                    🔙 Volver a la aplicación
+                </a>
+            </div>
+        </body>
+        </html>
+        """, 400
+    
+    # Detectar entorno
+    is_local = not os.environ.get('RENDER')
+    
+    if is_local:
         redirect_uri = 'http://localhost:5000/api/auth/callback'
-
+    else:
+        redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
+    
+    print(f"🔵 Usando redirect_uri: {redirect_uri}")
+    
     try:
         flow = InstalledAppFlow.from_client_secrets_file(
             'credentials.json',
             scopes=SCOPES,
             redirect_uri=redirect_uri
         )
-        # Usar authorization_response para fetch_token (asegura compatibilidad)
-        auth_resp = request.url
-        flow.fetch_token(authorization_response=auth_resp)
-
+        
+        print(f"🔵 Intercambiando código por token...")
+        flow.fetch_token(code=code)
         creds = flow.credentials
+        
+        print(f"✅ Token obtenido exitosamente")
+        
+        # Guardar token del usuario
         token_path = get_user_token_path(user_id)
-        with open(token_path, 'wb') as f:
-            pickle.dump(creds, f)
-
-        # Generar un token de sesión para usar como "Bearer" en llamadas API
-        access_token = secrets.token_urlsafe(32)
-        user_sessions[access_token] = {
+        TOKENS_DIR.mkdir(exist_ok=True)  # Asegurar que el directorio existe
+        
+        with open(token_path, 'wb') as token:
+            pickle.dump(creds, token)
+        
+        print(f"✅ Token guardado en: {token_path}")
+        
+        # Limpiar el state usado
+        del user_sessions[state]
+        print(f"✅ State limpiado")
+        
+        # Generar token de sesión para el frontend
+        session_token = secrets.token_urlsafe(32)
+        user_sessions[session_token] = {
             'user_id': user_id,
             'timestamp': datetime.now()
         }
-
-        # Borra el state temporal para evitar confusión
-        if state in user_sessions:
-            del user_sessions[state]
-
-        # Responder con una página simple que muestra el token y recomienda copiarlo
-        html = f"""
-        <html><body>
-        <h3>Autenticación completada</h3>
-        <p>Copia este token y úsalo como header Authorization: Bearer &lt;token&gt; en el frontend:</p>
-        <pre style="word-break:break-all;background:#f5f5f5;padding:10px;border-radius:6px;">{access_token}</pre>
-        <p>Puedes cerrar esta ventana.</p>
-        </body></html>
+        
+        print(f"✅ Token de sesión creado: {session_token[:20]}...")
+        
+        # Redirigir al frontend con el token
+        frontend_url = 'https://texmax25.github.io/Administrador-de-Facturas'
+        redirect_url = f'{frontend_url}?auth=success&token={session_token}'
+        
+        print(f"✅ Redirigiendo a: {redirect_url}")
+        
+        # Página de redirección automática con feedback visual
+        return f"""
+        <html>
+        <head>
+            <meta http-equiv="refresh" content="2;url={redirect_url}">
+        </head>
+        <body style="font-family: Arial; padding: 40px; background: #f5f5f5; text-align: center;">
+            <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #28a745;">✅ Autenticación Exitosa</h2>
+                <p>Redirigiendo a la aplicación...</p>
+                <div style="margin: 30px 0;">
+                    <div style="display: inline-block; width: 50px; height: 50px; border: 5px solid #f3f3f3; border-top: 5px solid #667eea; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                </div>
+                <p style="color: #666; font-size: 14px;">Si no eres redirigido automáticamente, 
+                <a href="{redirect_url}" style="color: #667eea;">haz clic aquí</a></p>
+            </div>
+            <style>
+                @keyframes spin {{
+                    0% {{ transform: rotate(0deg); }}
+                    100% {{ transform: rotate(360deg); }}
+                }}
+            </style>
+        </body>
+        </html>
         """
-        response = make_response(html)
-        response.headers['Content-Type'] = 'text/html'
-        return response
-
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'No se encontró credentials.json'}), 500
+    
     except Exception as e:
-        print(f"Error en callback OAuth: {e}")
-        return jsonify({'success': False, 'message': f'Error interno: {str(e)}'}), 500
+        print(f"❌ Error en OAuth: {e}")
+        import traceback
+        error_trace = traceback.format_exc()
+        print(error_trace)
+        
+        return f"""
+        <html>
+        <body style="font-family: Arial; padding: 40px; background: #f5f5f5;">
+            <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #dc3545;">❌ Error al Obtener Credenciales</h2>
+                <p><strong>Error:</strong> {str(e)}</p>
+                <details style="margin-top: 20px;">
+                    <summary style="cursor: pointer; color: #667eea;">Ver detalles técnicos</summary>
+                    <pre style="background: #f8f9fa; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 12px;">{error_trace}</pre>
+                </details>
+                <a href="https://texmax25.github.io/Administrador-de-Facturas" 
+                   style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
+                          background: #667eea; color: white; text-decoration: none; 
+                          border-radius: 5px;">
+                    🔙 Volver a la aplicación
+                </a>
+            </div>
+        </body>
+        </html>
+        """, 500
 
 # --- Reemplazar la lógica POST /api/chat para ejecutar el procesamiento real ---
 # Busca la función chat() actual y reemplázala por lo siguiente:
