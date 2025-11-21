@@ -557,7 +557,15 @@ class Organizador(RoutedAgent):
 
         if message.status == "INITIAL":
             # 1. Extraer intención
+            print(f"🔄 Llamando a OpenRouter para detectar intención...")
             intent_response = await call_openrouter(self._intent_prompt, message.user_input)
+            
+            # 🔥 NUEVO: Verificar si hay error de OpenRouter
+            if intent_response.startswith("ERROR:"):
+                print(f"❌ OpenRouter falló: {intent_response}")
+                print(f"💡 Intenta de nuevo en unos segundos")
+                return
+            
             lines = intent_response.strip().upper().split('\n')
             clean_intent = "DESCONOCIDO"
 
@@ -569,17 +577,25 @@ class Organizador(RoutedAgent):
             
             print(f"🎯 Intención detectada: {clean_intent}")
 
-            if clean_intent == "DESCONOCIDO" or clean_intent.startswith("ERROR"):
+            if clean_intent == "DESCONOCIDO":
                 print(f"❌ No pude entender tu solicitud.")
                 print(f"💡 Ejemplo: 'Factura 12345 por $500000 en 3 cuotas'")
+                print(f"📝 Respuesta de OpenRouter: {intent_response[:200]}")
                 return
             
             # 2. Extraer datos si es necesario
             if clean_intent in ["PLANIFICAR", "PAGAR"]:
+                print(f"🔄 Extrayendo datos del mensaje...")
                 data_json_str = await call_openrouter(
                     self._data_extraction_prompt, 
                     message.user_input
                 )
+                
+                # 🔥 NUEVO: Verificar error antes de parsear
+                if data_json_str.startswith("ERROR:"):
+                    print(f"❌ OpenRouter falló en extracción: {data_json_str}")
+                    print(f"💡 Intenta de nuevo en unos segundos")
+                    return
                 
                 print(f"📦 Respuesta de extracción: {data_json_str[:200]}")
                 
@@ -589,13 +605,11 @@ class Organizador(RoutedAgent):
                     
                     # Si viene con ```json o similar, limpiarlo
                     if '```' in data_json_clean:
-                        # Extraer solo el JSON entre los backticks
                         import re
                         json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', data_json_clean, re.DOTALL)
                         if json_match:
                             data_json_clean = json_match.group(1)
                         else:
-                            # Intentar encontrar cualquier objeto JSON
                             json_match = re.search(r'\{.*\}', data_json_clean, re.DOTALL)
                             if json_match:
                                 data_json_clean = json_match.group(0)
@@ -639,13 +653,11 @@ class Organizador(RoutedAgent):
             
             elif clean_intent in ["CONSULTA_FACTURA", "CONSULTA_DEUDAS", "CONSULTA_ESTADISTICAS"]:
                 if clean_intent == "CONSULTA_FACTURA":
-                    # Extraer número de factura del input directamente
                     import re
                     numeros = re.findall(r'\d+', message.user_input)
                     if numeros:
                         message.data['numero_factura'] = numeros[0]
                 
-                # Mapear tipo de consulta
                 consulta_map = {
                     "CONSULTA_FACTURA": "FACTURA_ESPECIFICA",
                     "CONSULTA_DEUDAS": "DEUDAS_PENDIENTES",
