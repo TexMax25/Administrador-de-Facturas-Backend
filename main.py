@@ -20,14 +20,14 @@ from autogen_core import AgentId, SingleThreadedAgentRuntime
 
 # --- 1. CONSTANTES DE API y CONFIGURACIÓN ---
 
-OPENROUTER_API_KEY = "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" 
+OPENROUTER_API_KEY = "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" 
 YOUR_SITE_URL = "https://mi-organizador-pagos.com" 
 YOUR_SITE_NAME = "Organizador Pagos AutoGen" 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODELS_FALLBACK = [
+    "google/gemini-2.0-flash-exp:free",       # Gemini 2.0 (experimental pero potente)
     "tngtech/deepseek-r1t2-chimera:free",     # DeepSeek (muy bueno para razonamiento)
     "z-ai/glm-4.5-air:free",                  # GLM-4 (bueno en español)
-    "google/gemini-2.0-flash-exp:free",       # Gemini 2.0 (experimental pero potente)
     "nvidia/nemotron-nano-12b-v2-vl:free",    # Nvidia Nemotron (rápido)
     "openai/gpt-oss-120b",                    # GPT OSS (open source)
 ]
@@ -216,7 +216,9 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
                 # Si hay rate limit (429), pasar al siguiente modelo
                 if response.status_code == 429:
                     if model_idx == 0 and intento_modelo == 0:
-                        print(f"⚠️ Rate limit en {model_name}, probando alternativas...")
+                        print(f"⚠️ Rate limit detectado, esperando 60 segundos...")
+                        await asyncio.sleep(60)  # 🔥 AUMENTAR A 60 segundos
+                        continue  # Reintentar con el mismo modelo
                     last_error = f"Rate limit en {model_name}"
                     break  # No reintentar este modelo, pasar al siguiente
                 
