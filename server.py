@@ -18,6 +18,10 @@ from urllib.parse import quote_plus
 from pathlib import Path
 import uuid
 
+sys.stdout = sys.__stdout__
+sys.stderr = sys.__stderr__
+os.environ['PYTHONUNBUFFERED'] = '1'
+
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -717,5 +721,17 @@ def index():
 # ============================================================================
 
 if __name__ == '__main__':
+    # 🔥 NUEVO: Configurar logging
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+    
     port = int(os.environ.get('PORT', 5000))
+    print(f"\n{'='*70}")
+    print(f"🚀 SERVIDOR INICIANDO EN PUERTO {port}")
+    print(f"{'='*70}\n")
+    
     app.run(debug=False, port=port, host='0.0.0.0')
