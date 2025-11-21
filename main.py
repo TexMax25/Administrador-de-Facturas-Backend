@@ -165,11 +165,23 @@ def _normalize_sheet_date(value):
         except Exception: pass
     return None
 
+# En main.py, REEMPLAZA completamente la función call_openrouter() con esta:
+
 async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
     """
-    Intenta llamar a OpenRouter con múltiples modelos GRATUITOS como respaldo.
-    Si uno falla por rate limit, prueba automáticamente con el siguiente.
+    Llama a OpenRouter con reintentos agresivos y delays progresivos.
+    Persiste hasta 3 minutos intentando obtener respuesta.
     """
+    
+    # 🔥 NUEVO: Modelos priorizados por disponibilidad
+    MODELS_PRIORITY = [
+        "google/gemini-2.0-flash-exp:free",       # Gemini 2.0 (mejor límite)
+        "meta-llama/llama-3.2-3b-instruct:free",  # Llama 3.2 (ligero)
+        "microsoft/phi-3-mini-128k-instruct:free",# Phi-3 (rápido)
+        "qwen/qwen-2-7b-instruct:free",           # Qwen (español)
+        "anthropic/claude-3-haiku:free",          # Claude Haiku si disponible
+        "openai/gpt-3.5-turbo",                   # GPT 3.5 (backup)
+    ]
     
     payload_base = {
         "messages": [
@@ -177,7 +189,7 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.0,
-        "max_tokens": 1024  # Limitar tokens para evitar timeouts
+        "max_tokens": 512,  # Reducido para respuestas más rápidas
     }
     
     headers = {
@@ -187,132 +199,110 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
         "X-Title": YOUR_SITE_NAME,
     }
     
-    last_error = None
-    intentos_totales = 0
-    max_intentos_por_modelo = 2  # Intentar cada modelo hasta 2 veces
+    start_time = asyncio.get_event_loop().time()
+    max_total_time = 180  # 🔥 Hasta 3 minutos intentando
     
-    # Intentar con cada modelo de la lista
-    for model_idx, model_name in enumerate(MODELS_FALLBACK):
+    modelo_actual_idx = 0
+    intento_global = 0
+    
+    while (asyncio.get_event_loop().time() - start_time) < max_total_time:
+        intento_global += 1
+        
+        # Rotar entre modelos
+        model_name = MODELS_PRIORITY[modelo_actual_idx % len(MODELS_PRIORITY)]
         payload = {**payload_base, "model": model_name}
         
-        for intento_modelo in range(max_intentos_por_modelo):
-            intentos_totales += 1
+        # 🔥 Delay progresivo: más intentos = más espera
+        if intento_global > 1:
+            delay = min(intento_global * 2, 30)  # Máximo 30 segundos
+            print(f"⏳ Esperando {delay}s antes de reintentar (intento {intento_global})...")
+            await asyncio.sleep(delay)
+        
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                response = await client.post(
+                    OPENROUTER_URL,
+                    headers=headers,
+                    json=payload
+                )
             
+            # Verificar respuesta vacía
+            if not response.content:
+                print(f"⚠️ {model_name}: Respuesta vacía")
+                modelo_actual_idx += 1
+                continue
+            
+            # Rate limit - cambiar de modelo y continuar
+            if response.status_code == 429:
+                print(f"⚠️ {model_name}: Rate limit alcanzado, probando otro modelo...")
+                modelo_actual_idx += 1
+                continue
+            
+            # Modelo no encontrado - siguiente
+            if response.status_code == 404:
+                print(f"⚠️ {model_name}: No disponible")
+                modelo_actual_idx += 1
+                continue
+            
+            # Error de autenticación - no tiene sentido seguir
+            if response.status_code == 401:
+                return "ERROR: API Key inválida. Verifica tu key en main.py"
+            
+            # Servicio no disponible - reintentar mismo modelo
+            if response.status_code == 503:
+                print(f"⚠️ {model_name}: Servicio temporalmente no disponible")
+                continue  # No cambiar modelo, reintentar
+            
+            # Otro error HTTP - cambiar modelo
+            if response.status_code != 200:
+                print(f"⚠️ {model_name}: HTTP {response.status_code}")
+                modelo_actual_idx += 1
+                continue
+            
+            # Intentar parsear JSON
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        OPENROUTER_URL,
-                        headers=headers,
-                        json=payload
-                    )
-                
-                # Verificar contenido
-                if not response.content:
-                    last_error = f"Respuesta vacía de {model_name}"
-                    if intento_modelo == 0:
-                        await asyncio.sleep(1)  # Esperar 1s antes de reintentar
-                    continue
-                
-                # Si hay rate limit (429), pasar al siguiente modelo
-                if response.status_code == 429:
-                    if model_idx == 0 and intento_modelo == 0:
-                        print(f"⚠️ Rate limit detectado, esperando 60 segundos...")
-                        await asyncio.sleep(60)  # 🔥 AUMENTAR A 60 segundos
-                        continue  # Reintentar con el mismo modelo
-                    last_error = f"Rate limit en {model_name}"
-                    break  # No reintentar este modelo, pasar al siguiente
-                
-                # Si hay error 404 (modelo no encontrado), pasar al siguiente
-                if response.status_code == 404:
-                    if intento_modelo == 0:
-                        print(f"⚠️ Modelo {model_name} no disponible")
-                    last_error = f"Modelo {model_name} no encontrado"
-                    break
-                
-                # Si hay error de autenticación, no tiene sentido seguir
-                if response.status_code == 401:
-                    return "ERROR: API Key inválida. Regenera tu key en https://openrouter.ai/keys"
-                
-                # Si hay error 503 (servicio no disponible), reintentar
-                if response.status_code == 503:
-                    if intento_modelo == 0:
-                        print(f"⚠️ Servicio temporalmente no disponible, reintentando...")
-                        await asyncio.sleep(2)
-                        continue
-                    else:
-                        last_error = f"Servicio no disponible: {model_name}"
-                        break
-                
-                # Si hay otro error HTTP, pasar al siguiente
-                if response.status_code != 200:
-                    error_preview = response.text[:150] if response.text else "Sin respuesta"
-                    if intento_modelo == 0:
-                        print(f"⚠️ Error {response.status_code} en {model_name}")
-                    last_error = f"HTTP {response.status_code} en {model_name}"
-                    break
-                
-                # Intentar parsear JSON
-                try:
-                    response_data = response.json()
-                except json.JSONDecodeError:
-                    if "<!DOCTYPE" in response.text or "<html" in response.text:
-                        return "ERROR: API Key inválida. Regenera tu key en https://openrouter.ai/keys"
-                    
-                    if intento_modelo == 0:
-                        print(f"⚠️ Respuesta no-JSON de {model_name}")
-                    last_error = f"JSON inválido de {model_name}"
-                    break
-                
-                # Verificar estructura
-                if 'choices' not in response_data or not response_data['choices']:
-                    error_msg = response_data.get('error', {}).get('message', 'Error desconocido')
-                    if intento_modelo == 0:
-                        print(f"⚠️ {model_name}: {error_msg}")
-                    last_error = f"{model_name}: {error_msg}"
-                    break
-                
-                # ¡ÉXITO! Extraer respuesta
-                result = response_data['choices'][0]['message']['content'].strip()
-                
-                # Avisar solo si NO es el primer modelo
-                if model_idx > 0:
-                    print(f"✅ Usando modelo alternativo: {model_name}")
-                
-                return result
-                
-            except httpx.TimeoutException:
-                if intento_modelo == 0:
-                    print(f"⏱️ Timeout en {model_name}, reintentando...")
-                    await asyncio.sleep(1)
-                    continue
-                else:
-                    last_error = f"Timeout en {model_name}"
-                    break
+                response_data = response.json()
+            except json.JSONDecodeError:
+                if "<!DOCTYPE" in response.text or "<html" in response.text:
+                    return "ERROR: API Key inválida o expirada"
+                print(f"⚠️ {model_name}: Respuesta no es JSON")
+                modelo_actual_idx += 1
+                continue
             
-            except httpx.RequestError as e:
-                if intento_modelo == 0:
-                    print(f"⚠️ Error de conexión con {model_name}")
-                last_error = f"Error de red con {model_name}: {str(e)}"
-                break
+            # Verificar estructura
+            if 'choices' not in response_data or not response_data['choices']:
+                error_msg = response_data.get('error', {}).get('message', 'Sin detalles')
+                print(f"⚠️ {model_name}: {error_msg}")
+                modelo_actual_idx += 1
+                continue
             
-            except Exception as e:
-                if intento_modelo == 0:
-                    print(f"⚠️ Error inesperado con {model_name}: {type(e).__name__}")
-                last_error = f"Error en {model_name}: {str(e)}"
-                break
+            # ¡ÉXITO!
+            result = response_data['choices'][0]['message']['content'].strip()
+            
+            if intento_global > 1:
+                print(f"✅ Éxito con {model_name} (intento {intento_global})")
+            
+            return result
+            
+        except httpx.TimeoutException:
+            print(f"⏱️ {model_name}: Timeout")
+            continue  # Reintentar mismo modelo
+        
+        except httpx.RequestError as e:
+            print(f"⚠️ {model_name}: Error de red")
+            await asyncio.sleep(5)  # Esperar más en errores de red
+            continue
+        
+        except Exception as e:
+            print(f"⚠️ {model_name}: {type(e).__name__}")
+            modelo_actual_idx += 1
+            continue
     
-    # Si llegamos aquí, todos los modelos fallaron
-    print(f"\n❌ Todos los modelos gratuitos están temporalmente no disponibles")
-    print(f"🔄 Intentos realizados: {intentos_totales}")
+    # Si llegamos aquí, se agotó el tiempo
+    elapsed = int(asyncio.get_event_loop().time() - start_time)
+    print(f"\n❌ No se pudo obtener respuesta después de {elapsed}s y {intento_global} intentos")
     
-    mensaje_error = "ERROR: Todos los modelos están temporalmente sobrecargados.\n\n"
-    mensaje_error += "💡 Soluciones:\n"
-    mensaje_error += "1. ⏳ Espera 2-5 minutos y vuelve a intentar\n"
-    mensaje_error += "2. 📝 Usa comandos sin IA: 'ayuda', 'ver sheets', 'ver deudas'\n"
-    mensaje_error += "3. 🔄 Regenera tu API key en https://openrouter.ai/keys\n\n"
-    mensaje_error += f"Último error: {last_error}"
-    
-    return mensaje_error
+    return "ERROR: Los servicios de IA están sobrecargados. Por favor intenta en 5-10 minutos."
     
 
 # --- 4. DEFINICIÓN DE AGENTES ---
@@ -501,6 +491,8 @@ class Consultor(RoutedAgent):
             print("="*70 + "\n")
 
 
+# En main.py, REEMPLAZA la función handle_message del Organizador con esta versión:
+
 @default_subscription
 class Organizador(RoutedAgent):
     """Agente central: Decide la ruta de comunicación y extrae datos clave usando la IA."""
@@ -560,12 +552,13 @@ class Organizador(RoutedAgent):
         if message.status == "INITIAL":
             # 1. Extraer intención
             print(f"🔄 Llamando a OpenRouter para detectar intención...")
+            print(f"⏳ Esto puede tardar 30-60s si hay mucha demanda...")
             intent_response = await call_openrouter(self._intent_prompt, message.user_input)
             
             # 🔥 NUEVO: Verificar si hay error de OpenRouter
             if intent_response.startswith("ERROR:"):
                 print(f"❌ OpenRouter falló: {intent_response}")
-                print(f"💡 Intenta de nuevo en unos segundos")
+                print(f"💡 Los servicios gratuitos están saturados. Intenta en 5-10 minutos.")
                 return
             
             lines = intent_response.strip().upper().split('\n')
