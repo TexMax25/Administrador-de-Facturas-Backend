@@ -167,7 +167,11 @@ async def inicializar_runtime(user_id):
 
 async def procesar_mensaje(user_input: str, user_id: str):
     """Procesa cada mensaje con un runtime limpio usando credenciales del usuario."""
-    print(f"\n🔵 INICIO procesar_mensaje: '{user_input[:50]}...' - Usuario: {user_id[:8]}")
+    print(f"\n{'='*70}")
+    print(f"🔵 INICIO procesar_mensaje")
+    print(f"📝 Input: '{user_input}'")
+    print(f"👤 Usuario: {user_id[:8]}")
+    print(f"{'='*70}")
     
     user_lower = user_input.lower()
     comandos_directos = ['ayuda', 'help', 'sheets', 'calendar']
@@ -210,6 +214,15 @@ async def procesar_mensaje(user_input: str, user_id: str):
         console_output = buffer.getvalue()
         print(f"✅ Procesamiento completo. Output: {len(console_output)} chars")
         
+        # 🔥 NUEVO: Mostrar parte del output para debugging
+        if console_output:
+            preview = console_output[:500]
+            print(f"📄 Output preview:\n{preview}")
+            if len(console_output) > 500:
+                print(f"... (truncado, total: {len(console_output)} chars)")
+        else:
+            print(f"⚠️ ADVERTENCIA: Output vacío del runtime")
+        
     except Exception as e:
         console_output = f"Error: {str(e)}"
         print(f"❌ Error en procesamiento: {e}")
@@ -224,7 +237,8 @@ async def procesar_mensaje(user_input: str, user_id: str):
         except Exception as e:
             print(f"⚠️ Error al detener runtime: {e}")
     
-    print(f"🔵 FIN procesar_mensaje\n")
+    print(f"🔵 FIN procesar_mensaje")
+    print(f"{'='*70}\n")
     return formatear_respuesta_procesada(user_input, console_output)
 
 
@@ -235,7 +249,21 @@ async def procesar_mensaje(user_input: str, user_id: str):
 def formatear_respuesta_procesada(user_input: str, console_output: str):
     """Extrae información del console output y la formatea."""
     
+    # 🔥 MEJORADO: Detectar output vacío o muy corto
     if not console_output or len(console_output.strip()) < 10:
+        print(f"⚠️ ADVERTENCIA: Output insuficiente ({len(console_output) if console_output else 0} chars)")
+        print(f"⚠️ Esto puede indicar que los agentes no procesaron el mensaje")
+        
+        # Si parece un comando de planificación/pago pero no hay output, advertir
+        user_lower = user_input.lower()
+        if any(word in user_lower for word in ['factura', 'pagar', 'pagué', 'abono', 'cuota']):
+            return ("⚠️ Error en procesamiento", 
+                    "<strong>⚠️ El sistema no pudo procesar tu solicitud</strong><br><br>"
+                    "Posibles causas:<br>"
+                    "• El servicio de IA está sobrecargado<br>"
+                    "• Error en la comunicación con Google Sheets<br><br>"
+                    "Por favor, intenta de nuevo en unos segundos.")
+        
         return generar_respuesta_contextual(user_input)
     
     lines = console_output.split('\n')
@@ -248,6 +276,13 @@ def formatear_respuesta_procesada(user_input: str, console_output: str):
     es_planificar = 'Planificación completada' in console_output or 'registrada en Google Sheets' in console_output
     es_pago = any(x in console_output for x in ['Pago procesado', 'cuota(s) afectada', 'PAGADA COMPLETAMENTE'])
     es_consulta = 'INFORMACIÓN DE FACTURA' in console_output or 'DEUDAS PENDIENTES' in console_output
+    
+    # 🔥 NUEVO: Detectar errores de OpenRouter
+    if 'ERROR' in console_output and 'OpenRouter' in console_output:
+        return ("⚠️ Servicio temporalmente no disponible",
+                "<strong>⚠️ El servicio de IA está temporalmente sobrecargado</strong><br><br>"
+                "Por favor, espera 1-2 minutos y vuelve a intentar.<br><br>"
+                "💡 O intenta comandos directos: 'ayuda', 'ver deudas'")
     
     # PLANIFICAR
     if es_planificar:
@@ -306,7 +341,13 @@ def formatear_respuesta_procesada(user_input: str, console_output: str):
     elif es_consulta:
         return "✅ Consulta realizada", f"<pre style='font-size:12px;background:#f5f5f5;padding:10px;border-radius:5px;overflow-x:auto'>{console_output}</pre>" + links_html
     
-    return generar_respuesta_contextual(user_input)
+    # 🔥 NUEVO: Si hay output pero no se detectó ninguna operación
+    print(f"⚠️ ADVERTENCIA: Output presente pero no se detectó operación específica")
+    return ("✅ Mensaje procesado", 
+            f"✅ Mensaje procesado<br><br>"
+            f"<details style='margin-top:10px'><summary style='cursor:pointer;color:#667eea'>Ver log del sistema</summary>"
+            f"<pre style='font-size:11px;background:#f8f9fa;padding:10px;border-radius:5px;max-height:300px;overflow:auto'>{console_output[:1000]}</pre>"
+            f"</details>" + links_html)
 
 
 def generar_respuesta_contextual(user_input: str):
