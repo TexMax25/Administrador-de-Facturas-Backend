@@ -446,11 +446,13 @@ def generar_respuesta_contextual(user_input: str, user_sheets_id: str = None):
 @app.route('/api/auth/login', methods=['GET'])
 def login():
     """Inicia el flujo de OAuth2."""
-    user_id = str(uuid.uuid4())
+    # 🔥 NO generar user_id aquí, solo el state
     state = str(uuid.uuid4())
     
-    # Guardar temporalmente en memoria
-    user_sessions[state] = {'user_id': user_id, 'timestamp': datetime.now()}
+    # Guardar temporalmente SOLO el state (sin user_id)
+    user_sessions[state] = {
+        'timestamp': datetime.now()
+    }
     
     # Construir redirect_uri según el entorno
     if os.environ.get('RENDER'):
@@ -472,11 +474,10 @@ def login():
         prompt='select_account'
     )
     
-    print(f"🔵 Login iniciado - User ID: {user_id}, State: {state}")
+    print(f"🔵 Login iniciado - State: {state}")
     
     return jsonify({
-        'auth_url': authorization_url,
-        'user_id': user_id
+        'auth_url': authorization_url
     })
 
 
@@ -499,25 +500,20 @@ def oauth_callback():
         frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
         return redirect(f'{frontend_url}?auth=error&message={error}')
     
-    # Recuperar user_id del diccionario temporal
+    # Verificar que el state existe
     session_data = user_sessions.get(state)
     
     if not session_data:
         print("❌ Error: State no encontrado en sesiones")
-        print(f"Estados disponibles: {list(user_sessions.keys())[:3]}")
-        
-        # Retornar HTML en lugar de redirect para ver el error
+        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
         return f"""
         <html>
         <body style="font-family: Arial; padding: 40px; background: #f5f5f5;">
             <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
                 <h2 style="color: #dc3545;">❌ Error de Autenticación</h2>
                 <p><strong>Problema:</strong> Sesión expirada o inválida</p>
-                <p><strong>State recibido:</strong> {state}</p>
-                <p><strong>Estados activos:</strong> {len(user_sessions)}</p>
-                <hr>
                 <p>Por favor, intenta iniciar sesión nuevamente.</p>
-                <a href="https://texmax25.github.io/Administrador-de-Facturas" 
+                <a href="{frontend_url}" 
                    style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
                           background: #667eea; color: white; text-decoration: none; 
                           border-radius: 5px;">
@@ -528,18 +524,16 @@ def oauth_callback():
         </html>
         """, 400
     
-    temp_user_id = session_data['user_id']
-    print(f"✅ Temp User ID recuperado: {temp_user_id}")
-    
     if not code:
         print("❌ Error: No se recibió código de autorización")
+        frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
         return f"""
         <html>
         <body style="font-family: Arial; padding: 40px; background: #f5f5f5;">
             <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
                 <h2 style="color: #dc3545;">❌ Error de Autenticación</h2>
                 <p><strong>Problema:</strong> No se recibió código de autorización</p>
-                <a href="https://texmax25.github.io/Administrador-de-Facturas" 
+                <a href="{frontend_url}" 
                    style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
                           background: #667eea; color: white; text-decoration: none; 
                           border-radius: 5px;">
@@ -552,11 +546,7 @@ def oauth_callback():
     
     # Detectar entorno
     is_local = not os.environ.get('RENDER')
-    
-    if is_local:
-        redirect_uri = 'http://localhost:5000/api/auth/callback'
-    else:
-        redirect_uri = 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
+    redirect_uri = 'http://localhost:5000/api/auth/callback' if is_local else 'https://administrador-de-facturas-backend.onrender.com/api/auth/callback'
     
     print(f"🔵 Usando redirect_uri: {redirect_uri}")
     
@@ -573,30 +563,48 @@ def oauth_callback():
         
         print(f"✅ Token obtenido exitosamente")
         
-        # 🔥 NUEVO: Obtener el email del usuario para crear un user_id permanente
-        user_id = temp_user_id  # Por defecto usar el temporal
+        # 🔥 CRÍTICO: Obtener el email SIEMPRE para crear user_id permanente
         user_email = None
+        user_id = None
         
         try:
-            # Construir servicio OAuth2 para obtener info del usuario
+            # Obtener info del usuario desde Google
             oauth2_service = build('oauth2', 'v2', credentials=creds)
             user_info = oauth2_service.userinfo().get().execute()
             user_email = user_info.get('email')
             
             if user_email:
-                # 🔥 Crear user_id permanente basado en el email
+                # 🔥 Crear user_id permanente usando hash del email
                 import hashlib
                 user_id = hashlib.sha256(user_email.encode()).hexdigest()[:16]
-                print(f"✅ Email de usuario: {user_email}")
-                print(f"✅ User ID permanente generado: {user_id}")
+                print(f"✅ Email: {user_email}")
+                print(f"✅ User ID permanente: {user_id}")
             else:
-                print(f"⚠️ No se pudo obtener email, usando UUID temporal")
+                print(f"❌ No se pudo obtener el email del usuario")
+                raise ValueError("No se pudo obtener el email")
                 
         except Exception as e:
-            print(f"⚠️ Error al obtener email del usuario: {e}")
-            print(f"⚠️ Usando UUID temporal como fallback")
+            print(f"❌ Error al obtener email: {e}")
+            frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
+            return f"""
+            <html>
+            <body style="font-family: Arial; padding: 40px; background: #f5f5f5;">
+                <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #dc3545;">❌ Error al Obtener Información</h2>
+                    <p><strong>Problema:</strong> No se pudo obtener tu información de Google</p>
+                    <p>Por favor, intenta iniciar sesión nuevamente.</p>
+                    <a href="{frontend_url}" 
+                       style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
+                              background: #667eea; color: white; text-decoration: none; 
+                              border-radius: 5px;">
+                        🔙 Volver a la aplicación
+                    </a>
+                </div>
+            </body>
+            </html>
+            """, 500
         
-        # Guardar token del usuario con el user_id REAL (basado en email)
+        # Guardar token con el user_id permanente
         token_path = get_user_token_path(user_id)
         TOKENS_DIR.mkdir(exist_ok=True)
         
@@ -605,23 +613,21 @@ def oauth_callback():
         
         print(f"✅ Token guardado en: {token_path}")
         
-        # Limpiar el state usado
+        # Limpiar el state temporal
         del user_sessions[state]
         print(f"✅ State limpiado")
         
-        # Generar token de sesión para el frontend
+        # 🔥 Generar token de sesión asociado al user_id PERMANENTE
         session_token = secrets.token_urlsafe(32)
         user_sessions[session_token] = {
-            'user_id': user_id,  # 🔥 Usa el ID permanente basado en email
+            'user_id': user_id,
             'timestamp': datetime.now(),
-            'email': user_email  # 🔥 Guardar también el email
+            'email': user_email
         }
         
-        print(f"✅ Token de sesión creado: {session_token[:20]}...")
-        if user_email:
-            print(f"✅ Asociado a: {user_email}")
+        print(f"✅ Sesión creada para {user_email} (ID: {user_id})")
         
-        # Redirigir al frontend con el token
+        # Redirigir al frontend
         frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
         redirect_url = f'{frontend_url}?auth=success&token={quote_plus(session_token)}'
         print(f"✅ Redirigiendo a: {redirect_url}")
