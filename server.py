@@ -138,21 +138,63 @@ def inicializar_servicios():
     return None, None
 
 
+def get_user_sheets_id_path(user_id):
+    """Obtiene la ruta del archivo donde se guarda el Sheets ID del usuario."""
+    return TOKENS_DIR / f'sheets_{user_id}.txt'
+
+def get_user_sheets_id(user_id):
+    """Obtiene el Sheets ID de un usuario específico."""
+    sheets_id_path = get_user_sheets_id_path(user_id)
+    if sheets_id_path.exists():
+        with open(sheets_id_path, 'r') as f:
+            return f.read().strip()
+    return None
+
+def save_user_sheets_id(user_id, sheets_id):
+    """Guarda el Sheets ID de un usuario."""
+    sheets_id_path = get_user_sheets_id_path(user_id)
+    with open(sheets_id_path, 'w') as f:
+        f.write(sheets_id)
+    print(f"✅ Sheets ID guardado para usuario {user_id[:8]}: {sheets_id}")
+
+
 # ============================================================================
 # FUNCIONES DE RUNTIME Y PROCESAMIENTO
 # ============================================================================
 
 async def inicializar_runtime(user_id):
-    """Crea un nuevo runtime usando las credenciales del usuario específico."""
+    """Crea un nuevo runtime usando las credenciales y Sheets del usuario específico."""
     new_runtime = SingleThreadedAgentRuntime()
     
-    # Obtener SPREADSHEET_ID
-    if main.SPREADSHEET_ID == 'TU_ID_DE_HOJA_DE_CALCULO':
-        if os.path.exists('sheets_id.txt'):
-            with open('sheets_id.txt', 'r') as f:
-                main.SPREADSHEET_ID = f.read().strip()
+    # 🔥 CRÍTICO: Obtener o crear el Sheets ID del usuario
+    user_sheets_id = get_user_sheets_id(user_id)
     
-    # 🔥 CRÍTICO: Usar credenciales del usuario, no globales
+    if not user_sheets_id:
+        # El usuario no tiene Sheets, crear uno nuevo
+        print(f"📋 Usuario {user_id[:8]} no tiene Sheets, creando uno nuevo...")
+        sheets_service_temp, _ = create_google_services(user_id)
+        
+        if sheets_service_temp:
+            new_sheets_id, sheets_url = main.crear_hoja_calculo(
+                sheets_service_temp,
+                f"Gestor de Pagos - Usuario {user_id[:8]}"
+            )
+            
+            if new_sheets_id:
+                user_sheets_id = new_sheets_id
+                save_user_sheets_id(user_id, new_sheets_id)
+                print(f"✅ Sheets creado: {sheets_url}")
+            else:
+                raise ValueError("No se pudo crear el Google Sheets")
+        else:
+            raise ValueError("No se pudieron obtener credenciales para crear Sheets")
+    else:
+        print(f"✅ Usando Sheets existente del usuario: {user_sheets_id}")
+    
+    # 🔥 ASIGNAR el Sheets ID del usuario a main.py
+    main.SPREADSHEET_ID = user_sheets_id
+    
+    # Crear servicios con credenciales del usuario
     sheets_service, calendar_service = create_google_services(user_id)
     
     if not sheets_service or not calendar_service:
@@ -243,15 +285,20 @@ async def procesar_mensaje(user_input: str, user_id: str):
     
     print(f"🔵 FIN procesar_mensaje")
     print(f"{'='*70}\n")
-    return formatear_respuesta_procesada(user_input, console_output)
+    return formatear_respuesta_procesada(user_input, console_output, user_id)
 
 
 # ============================================================================
 # FUNCIONES DE FORMATEO DE RESPUESTAS
 # ============================================================================
 
-def formatear_respuesta_procesada(user_input: str, console_output: str):
-    """Extrae información del console output y la formatea."""
+def formatear_respuesta_procesada(user_input: str, console_output: str, user_id: str):
+    """Extrae información del console output y la formatea usando el Sheets del usuario."""
+    
+    # 🔥 Obtener el Sheets ID específico del usuario
+    user_sheets_id = get_user_sheets_id(user_id)
+    if not user_sheets_id:
+        user_sheets_id = main.SPREADSHEET_ID  # Fallback al ID global si no existe
     
     # 🔥 MEJORADO: Detectar output vacío o muy corto
     if not console_output or len(console_output.strip()) < 10:
@@ -261,32 +308,34 @@ def formatear_respuesta_procesada(user_input: str, console_output: str):
         # Si parece un comando de planificación/pago pero no hay output, advertir
         user_lower = user_input.lower()
         if any(word in user_lower for word in ['factura', 'pagar', 'pagué', 'abono', 'cuota']):
+            sheets_url = f"https://docs.google.com/spreadsheets/d/{user_sheets_id}"
             return ("⚠️ Error en procesamiento", 
                     "<strong>⚠️ El sistema no pudo procesar tu solicitud</strong><br><br>"
                     "Posibles causas:<br>"
                     "• El servicio de IA está sobrecargado<br>"
                     "• Error en la comunicación con Google Sheets<br><br>"
-                    "Por favor, intenta de nuevo en unos segundos.")
+                    f"Por favor, intenta de nuevo en unos segundos.<br><br>"
+                    f'📊 <a href="{sheets_url}" target="_blank" class="sheets-link">Ver tu Google Sheets</a>')
         
-        return generar_respuesta_contextual(user_input)
+        return generar_respuesta_contextual(user_input, user_sheets_id)
     
     lines = console_output.split('\n')
     
-    sheets_url = f"https://docs.google.com/spreadsheets/d/{main.SPREADSHEET_ID}"
+    sheets_url = f"https://docs.google.com/spreadsheets/d/{user_sheets_id}"
     calendar_url = "https://calendar.google.com"
-    links_html = f'<br><br>📊 <a href="{sheets_url}" target="_blank" class="sheets-link">📄 Abrir Google Sheets</a> <a href="{calendar_url}" target="_blank" class="sheets-link" style="background: #ea4335;">📅 Abrir Google Calendar</a>'
+    links_html = f'<br><br>📊 <a href="{sheets_url}" target="_blank" class="sheets-link">📄 Abrir tu Google Sheets</a> <a href="{calendar_url}" target="_blank" class="sheets-link" style="background: #ea4335;">📅 Abrir Google Calendar</a>'
     
     # Detectar tipo de operación
     es_planificar = 'Planificación completada' in console_output or 'registrada en Google Sheets' in console_output
     es_pago = any(x in console_output for x in ['Pago procesado', 'cuota(s) afectada', 'PAGADA COMPLETAMENTE'])
     es_consulta = 'INFORMACIÓN DE FACTURA' in console_output or 'DEUDAS PENDIENTES' in console_output
     
-    # 🔥 NUEVO: Detectar errores de OpenRouter
-    if 'ERROR' in console_output and 'OpenRouter' in console_output:
+    # 🔥 Detectar errores de OpenRouter
+    if 'ERROR' in console_output and any(x in console_output for x in ['OpenRouter', 'API Key', 'sobrecargados']):
         return ("⚠️ Servicio temporalmente no disponible",
                 "<strong>⚠️ El servicio de IA está temporalmente sobrecargado</strong><br><br>"
                 "Por favor, espera 1-2 minutos y vuelve a intentar.<br><br>"
-                "💡 O intenta comandos directos: 'ayuda', 'ver deudas'")
+                "💡 O intenta comandos directos: 'ayuda', 'ver deudas'" + links_html)
     
     # PLANIFICAR
     if es_planificar:
@@ -345,7 +394,7 @@ def formatear_respuesta_procesada(user_input: str, console_output: str):
     elif es_consulta:
         return "✅ Consulta realizada", f"<pre style='font-size:12px;background:#f5f5f5;padding:10px;border-radius:5px;overflow-x:auto'>{console_output}</pre>" + links_html
     
-    # 🔥 NUEVO: Si hay output pero no se detectó ninguna operación
+    # 🔥 Si hay output pero no se detectó ninguna operación
     print(f"⚠️ ADVERTENCIA: Output presente pero no se detectó operación específica")
     return ("✅ Mensaje procesado", 
             f"✅ Mensaje procesado<br><br>"
@@ -354,20 +403,36 @@ def formatear_respuesta_procesada(user_input: str, console_output: str):
             f"</details>" + links_html)
 
 
-def generar_respuesta_contextual(user_input: str):
+def generar_respuesta_contextual(user_input: str, user_sheets_id: str = None):
     """Genera respuestas para comandos directos sin procesamiento."""
     user_lower = user_input.lower()
     
-    sheets_url = f"https://docs.google.com/spreadsheets/d/{main.SPREADSHEET_ID}"
+    # Usar el Sheets ID del usuario si está disponible
+    if not user_sheets_id:
+        user_sheets_id = main.SPREADSHEET_ID
+    
+    sheets_url = f"https://docs.google.com/spreadsheets/d/{user_sheets_id}"
     calendar_url = "https://calendar.google.com"
-    links_html = f'<br><br>📊 <a href="{sheets_url}" target="_blank" class="sheets-link">📄 Abrir Google Sheets</a> <a href="{calendar_url}" target="_blank" class="sheets-link" style="background: #ea4335;">📅 Abrir Google Calendar</a>'
+    links_html = f'<br><br>📊 <a href="{sheets_url}" target="_blank" class="sheets-link">📄 Abrir tu Google Sheets</a> <a href="{calendar_url}" target="_blank" class="sheets-link" style="background: #ea4335;">📅 Abrir Google Calendar</a>'
     
     if any(word in user_lower for word in ['ayuda', 'help', 'comandos']):
-        html = """<strong>💡 COMANDOS DISPONIBLES:</strong><br><br><strong>📝 PLANIFICAR:</strong><br><div class="code-example">"Factura 12345 por $500000 en 3 cuotas"</div><br><strong>💰 PAGAR:</strong><br><div class="code-example">"Pagué $200000 de la factura 12345"</div><br><strong>🔍 CONSULTAR:</strong><br><div class="code-example">"Consultar factura 12345"</div><div class="code-example">"Ver deudas pendientes"</div>""" + links_html
+        html = """<strong>💡 COMANDOS DISPONIBLES:</strong><br><br>
+<strong>📝 PLANIFICAR:</strong><br>
+<div class="code-example">"Factura 12345 por $500000 en 3 cuotas"</div><br>
+<strong>💰 PAGAR:</strong><br>
+<div class="code-example">"Pagué $200000 de la factura 12345"</div><br>
+<strong>🔍 CONSULTAR:</strong><br>
+<div class="code-example">"Consultar factura 12345"</div>
+<div class="code-example">"Ver deudas pendientes"</div>""" + links_html
         return "💡 Comandos disponibles", html
     
-    elif any(word in user_lower for word in ['sheets', 'calendar']):
-        html = f"""<strong>📊 ACCESOS RÁPIDOS</strong><br><br><a href="{sheets_url}" target="_blank" class="sheets-link">📄 Google Sheets</a><br><a href="{calendar_url}" target="_blank" class="sheets-link" style="background: #ea4335; margin-left:0;">📅 Google Calendar</a>"""
+    elif any(word in user_lower for word in ['sheets', 'calendar', 'link']):
+        html = f"""<strong>📊 TUS ACCESOS RÁPIDOS</strong><br><br>
+<a href="{sheets_url}" target="_blank" class="sheets-link">📄 Tu Google Sheets</a><br>
+<a href="{calendar_url}" target="_blank" class="sheets-link" style="background: #ea4335; margin-left:0;">📅 Google Calendar</a><br><br>
+<p style="font-size:12px;color:#666;margin-top:15px;">
+💡 Cada usuario tiene su propio Google Sheets personal. Tus datos están seguros y separados.
+</p>"""
         return "📊 Links de acceso", html
     
     else:
@@ -441,6 +506,7 @@ def oauth_callback():
         print("❌ Error: State no encontrado en sesiones")
         print(f"Estados disponibles: {list(user_sessions.keys())[:3]}")
         
+        # Retornar HTML en lugar de redirect para ver el error
         return f"""
         <html>
         <body style="font-family: Arial; padding: 40px; background: #f5f5f5;">
@@ -462,8 +528,8 @@ def oauth_callback():
         </html>
         """, 400
     
-    user_id = session_data['user_id']
-    print(f"✅ User ID recuperado: {user_id}")
+    temp_user_id = session_data['user_id']
+    print(f"✅ Temp User ID recuperado: {temp_user_id}")
     
     if not code:
         print("❌ Error: No se recibió código de autorización")
@@ -507,7 +573,30 @@ def oauth_callback():
         
         print(f"✅ Token obtenido exitosamente")
         
-        # Guardar token del usuario
+        # 🔥 NUEVO: Obtener el email del usuario para crear un user_id permanente
+        user_id = temp_user_id  # Por defecto usar el temporal
+        user_email = None
+        
+        try:
+            # Construir servicio OAuth2 para obtener info del usuario
+            oauth2_service = build('oauth2', 'v2', credentials=creds)
+            user_info = oauth2_service.userinfo().get().execute()
+            user_email = user_info.get('email')
+            
+            if user_email:
+                # 🔥 Crear user_id permanente basado en el email
+                import hashlib
+                user_id = hashlib.sha256(user_email.encode()).hexdigest()[:16]
+                print(f"✅ Email de usuario: {user_email}")
+                print(f"✅ User ID permanente generado: {user_id}")
+            else:
+                print(f"⚠️ No se pudo obtener email, usando UUID temporal")
+                
+        except Exception as e:
+            print(f"⚠️ Error al obtener email del usuario: {e}")
+            print(f"⚠️ Usando UUID temporal como fallback")
+        
+        # Guardar token del usuario con el user_id REAL (basado en email)
         token_path = get_user_token_path(user_id)
         TOKENS_DIR.mkdir(exist_ok=True)
         
@@ -523,11 +612,14 @@ def oauth_callback():
         # Generar token de sesión para el frontend
         session_token = secrets.token_urlsafe(32)
         user_sessions[session_token] = {
-            'user_id': user_id,
-            'timestamp': datetime.now()
+            'user_id': user_id,  # 🔥 Usa el ID permanente basado en email
+            'timestamp': datetime.now(),
+            'email': user_email  # 🔥 Guardar también el email
         }
         
         print(f"✅ Token de sesión creado: {session_token[:20]}...")
+        if user_email:
+            print(f"✅ Asociado a: {user_email}")
         
         # Redirigir al frontend con el token
         frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
@@ -689,6 +781,35 @@ def chat():
             'success': False, 
             'message': f'❌ Error: {str(e)}'
         }), 500
+
+@app.route('/api/user/sheets-url', methods=['GET'])
+def get_user_sheets_url():
+    """Devuelve el link del Google Sheets del usuario."""
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+
+    token = auth_header.replace('Bearer ', '')
+    session_data = user_sessions.get(token)
+    
+    if not session_data:
+        return jsonify({'success': False, 'message': 'Sesión expirada'}), 401
+
+    user_id = session_data['user_id']
+    sheets_id = get_user_sheets_id(user_id)
+    
+    if sheets_id:
+        sheets_url = f"https://docs.google.com/spreadsheets/d/{sheets_id}"
+        return jsonify({
+            'success': True,
+            'sheets_id': sheets_id,
+            'sheets_url': sheets_url
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'message': 'El usuario aún no tiene un Sheets creado'
+        })
 
 
 @app.route('/api/status', methods=['GET'])
