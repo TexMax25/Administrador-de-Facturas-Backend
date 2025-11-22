@@ -176,13 +176,7 @@ async def call_openrouter(system_prompt: str, user_prompt: str) -> str:
     """
     
     # 🔥 Modelos priorizados por disponibilidad
-    MODELS_PRIORITY = [
-        "google/gemini-2.0-flash-exp:free",
-        "meta-llama/llama-3.2-3b-instruct:free",
-        "microsoft/phi-3-mini-128k-instruct:free",
-        "qwen/qwen-2-7b-instruct:free",
-        "anthropic/claude-3-haiku:free",
-    ]
+    MODELS_PRIORITY = MODELS_FALLBACK
     
     payload_base = {
         "messages": [
