@@ -29,6 +29,7 @@ from googleapiclient.discovery import build
 
 from autogen_core import AgentId, SingleThreadedAgentRuntime
 import main
+import jwt
 
 app = Flask(__name__)
 
@@ -572,7 +573,6 @@ def oauth_callback():
         # MÉTODO 1: Intentar desde id_token (más rápido)
         try:
             if hasattr(creds, 'id_token') and creds.id_token:
-                import jwt
                 decoded_token = jwt.decode(creds.id_token, options={"verify_signature": False})
                 user_email = decoded_token.get('email')
                 
@@ -603,7 +603,6 @@ def oauth_callback():
             try:
                 print(f"🔄 Intentando usar Google SUB como identificador...")
                 if hasattr(creds, 'id_token') and creds.id_token:
-                    import jwt
                     decoded_token = jwt.decode(creds.id_token, options={"verify_signature": False})
                     google_sub = decoded_token.get('sub')
                     

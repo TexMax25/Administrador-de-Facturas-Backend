@@ -303,17 +303,19 @@ class Consultor(RoutedAgent):
         self.sheets_service = sheets_service
     
     def _obtener_info_factura(self, factura_id: str) -> dict:
-        """Obtiene información detallada de una factura específica."""
+        """Obtiene información detallada de una factura específica (pendientes Y pagadas)."""
         try:
-            result = self.sheets_service.spreadsheets().values().get(
+            # Obtener cuotas PENDIENTES
+            result_pendientes = self.sheets_service.spreadsheets().values().get(
                 spreadsheetId=SPREADSHEET_ID, 
-                range=SHEETS_RANGE
+                range='Deuda Pendiente!A:H'
             ).execute()
             
-            values = result.get('values', [])
+            values_pendientes = result_pendientes.get('values', [])
             cuotas = []
             
-            for i, row in enumerate(values):
+            # Procesar cuotas pendientes
+            for i, row in enumerate(values_pendientes):
                 if i == 0: continue
                 if len(row) >= 8:
                     cuota_id = str(row[1]).strip()
@@ -327,6 +329,64 @@ class Consultor(RoutedAgent):
                             'tipo': row[6],
                             'estado': row[7]
                         })
+            
+            # 🔥 NUEVO: Obtener cuotas PAGADAS del historial
+            try:
+                historial_sheet_name = 'Historial de Pagos' if 'Historial de Pagos' in self.sheets_service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute().get('sheets', [{}])[0].get('properties', {}).get('title', '') else 'Facturas Pagadas'
+                
+                result_historial = self.sheets_service.spreadsheets().values().get(
+                    spreadsheetId=SPREADSHEET_ID,
+                    range=f'{historial_sheet_name}!A:F'
+                ).execute()
+                
+                values_historial = result_historial.get('values', [])
+                
+                # Agrupar pagos por cuota para identificar cuotas completamente pagadas
+                pagos_por_cuota = {}
+                
+                for i, row in enumerate(values_historial):
+                    if i == 0: continue
+                    if len(row) >= 5:
+                        cuota_id = str(row[1]).strip()
+                        tipo_transaccion = row[2]
+                        monto_pagado = float(row[3]) if row[3] else 0
+                        saldo_restante = float(row[4]) if row[4] else 0
+                        
+                        # Si la cuota pertenece a esta factura
+                        if cuota_id.startswith(f"{factura_id}-"):
+                            if cuota_id not in pagos_por_cuota:
+                                pagos_por_cuota[cuota_id] = {
+                                    'monto_total_pagado': 0,
+                                    'saldo_final': saldo_restante,
+                                    'esta_pagada': False
+                                }
+                            
+                            pagos_por_cuota[cuota_id]['monto_total_pagado'] += monto_pagado
+                            pagos_por_cuota[cuota_id]['saldo_final'] = saldo_restante
+                            
+                            # Si el saldo es 0 y es "Pago Completo", está pagada
+                            if tipo_transaccion == "Pago Completo" and saldo_restante == 0:
+                                pagos_por_cuota[cuota_id]['esta_pagada'] = True
+                
+                # Agregar cuotas pagadas que NO están en "Deuda Pendiente"
+                for cuota_id, info_pago in pagos_por_cuota.items():
+                    if info_pago['esta_pagada']:
+                        # Verificar si ya está en la lista (no debería, pero por si acaso)
+                        if not any(c['cuota_id'] == cuota_id for c in cuotas):
+                            # Reconstruir la info de la cuota pagada
+                            cuotas.append({
+                                'cuota_id': cuota_id,
+                                'monto_total': info_pago['monto_total_pagado'],  # Aproximado
+                                'monto_pendiente': 0,
+                                'monto_cuota': info_pago['monto_total_pagado'],
+                                'fecha_vencimiento': 'N/A',  # No tenemos esta info en el historial
+                                'tipo': 'Fraccionado',
+                                'estado': 'PAGADA'
+                            })
+            
+            except Exception as e:
+                print(f"⚠️ No se pudo obtener historial de pagos: {e}")
+                # Continuar sin las cuotas pagadas
             
             return {'existe': len(cuotas) > 0, 'cuotas': cuotas}
         except Exception as e:
@@ -429,14 +489,32 @@ class Consultor(RoutedAgent):
                 total_general = info['cuotas'][0]['monto_total'] if info['cuotas'] else 0
                 total_pendiente = sum(c['monto_pendiente'] for c in info['cuotas'])
                 
+                # Separar cuotas pagadas y pendientes
+                cuotas_pendientes = [c for c in info['cuotas'] if c['estado'] == 'PENDIENTE']
+                cuotas_pagadas = [c for c in info['cuotas'] if c['estado'] == 'PAGADA']
+                
                 print(f"💰 Monto total: ${total_general:,.0f} COP")
                 print(f"💵 Total pendiente: ${total_pendiente:,.0f} COP")
-                print(f"📊 Cuotas: {len(info['cuotas'])}")
-                print(f"\n{'Cuota':<15} {'Monto Cuota':<20} {'Pendiente':<20} {'Vencimiento':<15} {'Estado'}")
-                print("-"*90)
+                print(f"✅ Total pagado: ${total_general - total_pendiente:,.0f} COP")
+                print(f"📊 Total cuotas: {len(info['cuotas'])} ({len(cuotas_pagadas)} pagadas, {len(cuotas_pendientes)} pendientes)")
                 
-                for cuota in info['cuotas']:
-                    print(f"{cuota['cuota_id']:<15} ${cuota['monto_cuota']:>12,.0f} COP  ${cuota['monto_pendiente']:>12,.0f} COP  {cuota['fecha_vencimiento']:<15} {cuota['estado']}")
+                # Mostrar cuotas PENDIENTES
+                if cuotas_pendientes:
+                    print(f"\n💳 CUOTAS PENDIENTES:")
+                    print(f"{'Cuota':<15} {'Monto Original':<20} {'Pendiente':<20} {'Vencimiento':<15}")
+                    print("-"*70)
+                    
+                    for cuota in cuotas_pendientes:
+                        print(f"{cuota['cuota_id']:<15} ${cuota['monto_cuota']:>12,.0f} COP  ${cuota['monto_pendiente']:>12,.0f} COP  {cuota['fecha_vencimiento']:<15}")
+                
+                # Mostrar cuotas PAGADAS
+                if cuotas_pagadas:
+                    print(f"\n✅ CUOTAS PAGADAS:")
+                    print(f"{'Cuota':<15} {'Monto Original':<20} {'Fecha Vencimiento':<15}")
+                    print("-"*70)
+                    
+                    for cuota in cuotas_pagadas:
+                        print(f"{cuota['cuota_id']:<15} ${cuota['monto_cuota']:>12,.0f} COP  {cuota['fecha_vencimiento']:<15}")
                 
                 print("="*70 + "\n")
             else:
