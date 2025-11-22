@@ -54,6 +54,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/userinfo.email', 
+    'openid' 
 ]
 
 # Directorio de tokens por usuario
@@ -472,7 +473,7 @@ def login():
         access_type='offline',
         include_granted_scopes='true',
         state=state,
-        prompt='select_account'
+        prompt='consent select_account'
     )
     
     print(f"🔵 Login iniciado - State: {state}")

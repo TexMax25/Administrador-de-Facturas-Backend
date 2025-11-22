@@ -34,7 +34,9 @@ MODELS_FALLBACK = [
 
 SCOPES = [
     'https://www.googleapis.com/auth/calendar',
-    'https://www.googleapis.com/auth/spreadsheets'
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/userinfo.email',  
+    'openid'  
 ]
 
 CALENDAR_ID = 'primary'
