@@ -52,7 +52,8 @@ CORS(app, origins=[
 
 SCOPES = [
     'https://www.googleapis.com/auth/calendar',
-    'https://www.googleapis.com/auth/spreadsheets'
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/userinfo.email', 
 ]
 
 # Directorio de tokens por usuario
@@ -563,46 +564,95 @@ def oauth_callback():
         
         print(f"✅ Token obtenido exitosamente")
         
-        # 🔥 CRÍTICO: Obtener el email SIEMPRE para crear user_id permanente
+        # 🔥 OBTENER EMAIL DEL USUARIO (3 métodos)
         user_email = None
         user_id = None
         
+        # MÉTODO 1: Intentar desde id_token (más rápido)
         try:
-            # Obtener info del usuario desde Google
-            oauth2_service = build('oauth2', 'v2', credentials=creds)
-            user_info = oauth2_service.userinfo().get().execute()
-            user_email = user_info.get('email')
-            
-            if user_email:
-                # 🔥 Crear user_id permanente usando hash del email
-                import hashlib
-                user_id = hashlib.sha256(user_email.encode()).hexdigest()[:16]
-                print(f"✅ Email: {user_email}")
-                print(f"✅ User ID permanente: {user_id}")
-            else:
-                print(f"❌ No se pudo obtener el email del usuario")
-                raise ValueError("No se pudo obtener el email")
+            if hasattr(creds, 'id_token') and creds.id_token:
+                import jwt
+                decoded_token = jwt.decode(creds.id_token, options={"verify_signature": False})
+                user_email = decoded_token.get('email')
                 
+                if user_email:
+                    print(f"✅ Email obtenido del id_token: {user_email}")
+                else:
+                    print(f"⚠️ id_token no contiene email")
         except Exception as e:
-            print(f"❌ Error al obtener email: {e}")
-            frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
-            return f"""
-            <html>
-            <body style="font-family: Arial; padding: 40px; background: #f5f5f5;">
-                <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #dc3545;">❌ Error al Obtener Información</h2>
-                    <p><strong>Problema:</strong> No se pudo obtener tu información de Google</p>
-                    <p>Por favor, intenta iniciar sesión nuevamente.</p>
-                    <a href="{frontend_url}" 
-                       style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
-                              background: #667eea; color: white; text-decoration: none; 
-                              border-radius: 5px;">
-                        🔙 Volver a la aplicación
-                    </a>
-                </div>
-            </body>
-            </html>
-            """, 500
+            print(f"⚠️ No se pudo decodificar id_token: {e}")
+        
+        # MÉTODO 2: Usar la API userinfo
+        if not user_email:
+            try:
+                print(f"🔄 Intentando obtener email desde userinfo API...")
+                oauth2_service = build('oauth2', 'v2', credentials=creds)
+                user_info = oauth2_service.userinfo().get().execute()
+                user_email = user_info.get('email')
+                
+                if user_email:
+                    print(f"✅ Email obtenido de userinfo API: {user_email}")
+                else:
+                    print(f"⚠️ userinfo API no devolvió email")
+            except Exception as e:
+                print(f"⚠️ Error en userinfo API: {e}")
+        
+        # MÉTODO 3 (FALLBACK): Usar Google SUB como identificador único
+        if not user_email:
+            try:
+                print(f"🔄 Intentando usar Google SUB como identificador...")
+                if hasattr(creds, 'id_token') and creds.id_token:
+                    import jwt
+                    decoded_token = jwt.decode(creds.id_token, options={"verify_signature": False})
+                    google_sub = decoded_token.get('sub')
+                    
+                    if google_sub:
+                        # Usar el SUB de Google como identificador único
+                        import hashlib
+                        user_id = hashlib.sha256(google_sub.encode()).hexdigest()[:16]
+                        user_email = f"user_{user_id}@google.placeholder"
+                        print(f"✅ Usando Google SUB: {google_sub}")
+                        print(f"✅ User ID generado: {user_id}")
+                    else:
+                        raise ValueError("No se encontró SUB en id_token")
+                else:
+                    raise ValueError("No hay id_token disponible")
+            except Exception as e:
+                print(f"❌ Error crítico al obtener identificador: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
+                return f"""
+                <html>
+                <body style="font-family: Arial; padding: 40px; background: #f5f5f5;">
+                    <div style="background: white; padding: 30px; border-radius: 10px; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #dc3545;">❌ Error de Autenticación</h2>
+                        <p><strong>Problema:</strong> No se pudo obtener un identificador único de tu cuenta de Google</p>
+                        <p><strong>Error:</strong> {str(e)}</p>
+                        <hr style="margin: 20px 0;">
+                        <p><strong>Soluciones:</strong></p>
+                        <ol style="text-align: left; margin: 15px 0;">
+                            <li>Cierra todas tus sesiones de Google</li>
+                            <li>Vuelve a intentar iniciar sesión</li>
+                            <li>Asegúrate de aceptar TODOS los permisos</li>
+                        </ol>
+                        <a href="{frontend_url}" 
+                           style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
+                                  background: #667eea; color: white; text-decoration: none; 
+                                  border-radius: 5px;">
+                            🔙 Volver a la aplicación
+                        </a>
+                    </div>
+                </body>
+                </html>
+                """, 500
+        
+        # Si tenemos email pero no user_id, generarlo ahora
+        if user_email and not user_id:
+            import hashlib
+            user_id = hashlib.sha256(user_email.encode()).hexdigest()[:16]
+            print(f"✅ User ID permanente generado: {user_id}")
         
         # Guardar token con el user_id permanente
         token_path = get_user_token_path(user_id)
@@ -617,7 +667,7 @@ def oauth_callback():
         del user_sessions[state]
         print(f"✅ State limpiado")
         
-        # 🔥 Generar token de sesión asociado al user_id PERMANENTE
+        # Generar token de sesión
         session_token = secrets.token_urlsafe(32)
         user_sessions[session_token] = {
             'user_id': user_id,
@@ -625,7 +675,9 @@ def oauth_callback():
             'email': user_email
         }
         
-        print(f"✅ Sesión creada para {user_email} (ID: {user_id})")
+        print(f"✅ Sesión creada")
+        print(f"   Email: {user_email}")
+        print(f"   User ID: {user_id}")
         
         # Redirigir al frontend
         frontend_url = os.environ.get('FRONTEND_URL', 'https://texmax25.github.io/Administrador-de-Facturas')
