@@ -301,23 +301,16 @@ def formatear_respuesta_procesada(user_input: str, console_output: str, user_id:
     # 🔥 Obtener el Sheets ID específico del usuario
     user_sheets_id = get_user_sheets_id(user_id)
     if not user_sheets_id:
-        user_sheets_id = main.SPREADSHEET_ID  # Fallback al ID global si no existe
+        user_sheets_id = main.SPREADSHEET_ID
     
-    # 🔥 MEJORADO: Detectar output vacío o muy corto
     if not console_output or len(console_output.strip()) < 10:
-        print(f"⚠️ ADVERTENCIA: Output insuficiente ({len(console_output) if console_output else 0} chars)")
-        print(f"⚠️ Esto puede indicar que los agentes no procesaron el mensaje")
-        
-        # Si parece un comando de planificación/pago pero no hay output, advertir
+        print(f"⚠️ ADVERTENCIA: Output insuficiente")
         user_lower = user_input.lower()
         if any(word in user_lower for word in ['factura', 'pagar', 'pagué', 'abono', 'cuota']):
             sheets_url = f"https://docs.google.com/spreadsheets/d/{user_sheets_id}"
             return ("⚠️ Error en procesamiento", 
                     "<strong>⚠️ El sistema no pudo procesar tu solicitud</strong><br><br>"
-                    "Posibles causas:<br>"
-                    "• El servicio de IA está sobrecargado<br>"
-                    "• Error en la comunicación con Google Sheets<br><br>"
-                    f"Por favor, intenta de nuevo en unos segundos.<br><br>"
+                    f"Por favor, intenta de nuevo.<br><br>"
                     f'📊 <a href="{sheets_url}" target="_blank" class="sheets-link">Ver tu Google Sheets</a>')
         
         return generar_respuesta_contextual(user_input, user_sheets_id)
@@ -333,12 +326,10 @@ def formatear_respuesta_procesada(user_input: str, console_output: str, user_id:
     es_pago = any(x in console_output for x in ['Pago procesado', 'cuota(s) afectada', 'PAGADA COMPLETAMENTE'])
     es_consulta = 'INFORMACIÓN DE FACTURA' in console_output or 'DEUDAS PENDIENTES' in console_output
     
-    # 🔥 Detectar errores de OpenRouter
     if 'ERROR' in console_output and any(x in console_output for x in ['OpenRouter', 'API Key', 'sobrecargados']):
         return ("⚠️ Servicio temporalmente no disponible",
                 "<strong>⚠️ El servicio de IA está temporalmente sobrecargado</strong><br><br>"
-                "Por favor, espera 1-2 minutos y vuelve a intentar.<br><br>"
-                "💡 O intenta comandos directos: 'ayuda', 'ver deudas'" + links_html)
+                "Por favor, espera 1-2 minutos y vuelve a intentar." + links_html)
     
     # PLANIFICAR
     if es_planificar:
@@ -393,17 +384,45 @@ def formatear_respuesta_procesada(user_input: str, console_output: str, user_id:
         
         return f"✅ Pago registrado: {num_afectadas} cuota(s) procesada(s)", html
     
-    # CONSULTA
+    # CONSULTA - 🔥 MEJORADO: Extraer solo la información de la factura
     elif es_consulta:
-        return "✅ Consulta realizada", f"<pre style='font-size:12px;background:#f5f5f5;padding:10px;border-radius:5px;overflow-x:auto'>{console_output}</pre>" + links_html
+        # Buscar el bloque de información de la factura
+        info_match = re.search(
+            r'📋 INFORMACIÓN DE FACTURA (\d+)\s*=+\s*'
+            r'💰 Monto total: \$([\d,]+) COP\s*'
+            r'💵 Total pendiente: \$([\d,]+) COP\s*'
+            r'✅ Total pagado: \$([\d,]+) COP\s*'
+            r'📊 Total cuotas: (\d+) \((\d+) pagadas, (\d+) pendientes\)',
+            console_output,
+            re.MULTILINE
+        )
+        
+        if info_match:
+            factura_id = info_match.group(1)
+            monto_total = info_match.group(2)
+            total_pendiente = info_match.group(3)
+            total_pagado = info_match.group(4)
+            total_cuotas = info_match.group(5)
+            cuotas_pagadas = info_match.group(6)
+            cuotas_pendientes = info_match.group(7)
+            
+            html = f"""<strong>📋 INFORMACIÓN DE FACTURA {factura_id}</strong><br><br>
+<div style="background:#f8f9fa;padding:15px;border-radius:8px;font-size:14px">
+💰 <strong>Monto total:</strong> ${monto_total} COP<br>
+💵 <strong>Total pendiente:</strong> ${total_pendiente} COP<br>
+✅ <strong>Total pagado:</strong> ${total_pagado} COP<br>
+📊 <strong>Total cuotas:</strong> {total_cuotas} ({cuotas_pagadas} pagadas, {cuotas_pendientes} pendientes)
+</div>""" + links_html
+            
+            return f"📋 Factura {factura_id}", html
+        else:
+            # Fallback: mostrar todo el output
+            return "✅ Consulta realizada", f"<pre style='font-size:12px;background:#f5f5f5;padding:10px;border-radius:5px;overflow-x:auto'>{console_output[:500]}</pre>" + links_html
     
-    # 🔥 Si hay output pero no se detectó ninguna operación
+    # Si no se detectó nada específico
     print(f"⚠️ ADVERTENCIA: Output presente pero no se detectó operación específica")
     return ("✅ Mensaje procesado", 
-            f"✅ Mensaje procesado<br><br>"
-            f"<details style='margin-top:10px'><summary style='cursor:pointer;color:#667eea'>Ver log del sistema</summary>"
-            f"<pre style='font-size:11px;background:#f8f9fa;padding:10px;border-radius:5px;max-height:300px;overflow:auto'>{console_output[:1000]}</pre>"
-            f"</details>" + links_html)
+            f"✅ Mensaje procesado" + links_html)
 
 
 def generar_respuesta_contextual(user_input: str, user_sheets_id: str = None):
