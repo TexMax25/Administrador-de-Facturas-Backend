@@ -473,7 +473,7 @@ def login():
         access_type='offline',
         include_granted_scopes='true',
         state=state,
-        prompt='consent select_account'
+        prompt='select_account'
     )
     
     print(f"🔵 Login iniciado - State: {state}")
