@@ -456,6 +456,9 @@ class Consultor(RoutedAgent):
         
         if consulta_tipo == 'FACTURA_ESPECIFICA':
             factura_id = message.data.get('numero_factura')
+            if not factura_id or not isinstance(factura_id, str):
+                print(f"\n❌ No se especificó un número de factura válido\n")
+                return
             info = self._obtener_info_factura(factura_id)
             
             if info['existe']:
@@ -539,21 +542,26 @@ class Organizador(RoutedAgent):
             "- numero_factura: el número de factura (string, sin ceros a la izquierda)\n"
             "- monto_total: monto total si es planificación (float, sin símbolos)\n"
             "- monto_abono: monto del pago/abono (float, sin símbolos)\n"
-            "- fracciones: número de cuotas/fracciones (integer)\n"
+            "- dias_vencimiento: número de días desde hoy hasta el vencimiento (integer o null)\n"
+            "- fecha_vencimiento: fecha específica de vencimiento en formato YYYY-MM-DD (string o null)\n"
             "- cuota_especifica: número de cuota específica si se menciona (integer o null)\n\n"
             "REGLAS IMPORTANTES:\n"
             "1. Extrae números SIN modificar: '15744' debe ser '15744', NO '1574'\n"
             "2. Para montos usa SOLO números: '$150000' → 150000.0\n"
             "3. Si dice 'pesos' o 'COP', ignóralos, solo extrae el número\n"
-            "4. Si no menciona algo, usa: 0.0 para montos, 1 para fracciones, null para cuota\n"
-            "5. NO incluyas texto extra, SOLO el JSON\n\n"
+            "4. Si menciona días (ej: '15 días', 'a 30 días', 'en 7 días'), extrae como dias_vencimiento\n"
+            "5. Si menciona una fecha (ej: '25 de diciembre', '2025-12-25', 'vence el 15/12'), extrae como fecha_vencimiento en formato YYYY-MM-DD\n"
+            "6. Si no menciona ni días ni fecha, usa null para ambos\n"
+            "7. NO incluyas texto extra, SOLO el JSON\n\n"
             "Ejemplos:\n"
-            "Input: 'factura 15744 por $150000 pesos a 3 cuotas'\n"
-            "Output: {\"numero_factura\": \"15744\", \"monto_total\": 150000.0, \"monto_abono\": 0.0, \"fracciones\": 3, \"cuota_especifica\": null}\n\n"
-            "Input: 'pagué $50000 de la factura 123'\n"
-            "Output: {\"numero_factura\": \"123\", \"monto_total\": 0.0, \"monto_abono\": 50000.0, \"fracciones\": 1, \"cuota_especifica\": null}\n\n"
-            "Input: 'abono de $30000 a cuota 2 de factura 456'\n"
-            "Output: {\"numero_factura\": \"456\", \"monto_total\": 0.0, \"monto_abono\": 30000.0, \"fracciones\": 1, \"cuota_especifica\": 2}\n\n"
+            "Input: 'factura 15744 por $150000 pesos vence en 15 días'\n"
+            "Output: {\"numero_factura\": \"15744\", \"monto_total\": 150000.0, \"monto_abono\": 0.0, \"dias_vencimiento\": 15, \"fecha_vencimiento\": null, \"cuota_especifica\": null}\n\n"
+            "Input: 'factura 123 por $200000 vence el 25 de diciembre de 2025'\n"
+            "Output: {\"numero_factura\": \"123\", \"monto_total\": 200000.0, \"monto_abono\": 0.0, \"dias_vencimiento\": null, \"fecha_vencimiento\": \"2025-12-25\", \"cuota_especifica\": null}\n\n"
+            "Input: 'factura 456 de $300000 a 30 días'\n"
+            "Output: {\"numero_factura\": \"456\", \"monto_total\": 300000.0, \"monto_abono\": 0.0, \"dias_vencimiento\": 30, \"fecha_vencimiento\": null, \"cuota_especifica\": null}\n\n"
+            "Input: 'pagué $50000 de la factura 789'\n"
+            "Output: {\"numero_factura\": \"789\", \"monto_total\": 0.0, \"monto_abono\": 50000.0, \"dias_vencimiento\": null, \"fecha_vencimiento\": null, \"cuota_especifica\": null}\n\n"
             "Ahora extrae del siguiente texto y devuelve SOLO el JSON:"
         )
 
@@ -731,7 +739,6 @@ class Planificador(RoutedAgent):
                     if fecha:
                         fechas_count[fecha] = fechas_count.get(fecha, 0) + 1
             
-            # Solo mostrar si hay fechas ocupadas
             if fechas_count:
                 print(f"📊 Fechas ocupadas: {len(fechas_count)} día(s) con pagos programados")
             return fechas_count
@@ -739,98 +746,121 @@ class Planificador(RoutedAgent):
         except Exception as e:
             return {}
     
-    def _encontrar_fecha_disponible(self, fecha_base: date, fechas_ocupadas: dict, max_por_dia: int = 2) -> str:
+    def _encontrar_fecha_disponible(self, fecha_base: date, fechas_ocupadas: dict, max_por_dia: int = 2, buscar_dias: int = 3) -> str:
         """
-        Encuentra la fecha más cercana que tenga MENOS pagos programados.
-        Estrategia: Prioriza fechas vacías, luego con 1 pago, luego con 2, etc.
+        Encuentra la fecha más cercana que tenga menos de max_por_dia pagos.
+        
+        Estrategia:
+        1. Si fecha_base tiene menos de max_por_dia pagos, usarla
+        2. Si no, buscar en los próximos buscar_dias días
+        3. Priorizar fechas vacías, luego con menos pagos
         """
         fecha_candidata = fecha_base
-        intentos = 0
-        max_intentos = 45  # Buscar hasta 45 días después
         
-        # Estrategia: Buscar primero fechas completamente vacías
+        # Primero verificar la fecha base
+        fecha_str = fecha_base.strftime("%Y-%m-%d")
+        ocupacion_base = fechas_ocupadas.get(fecha_str, 0)
+        
+        if ocupacion_base < max_por_dia:
+            if ocupacion_base > 0:
+                print(f"   📅 {fecha_str} (ya tiene {ocupacion_base} pago{'s' if ocupacion_base > 1 else ''})")
+            return fecha_str
+        
+        # Si la fecha base está llena, buscar en los próximos días
+        print(f"   ⚠️ {fecha_str} está llena ({ocupacion_base} pagos), buscando alternativa...")
+        
         mejor_fecha = None
         menor_ocupacion = float('inf')
         
-        while intentos < max_intentos:
+        for i in range(1, buscar_dias + 1):
+            fecha_candidata = fecha_base + timedelta(days=i)
             fecha_str = fecha_candidata.strftime("%Y-%m-%d")
             ocupacion = fechas_ocupadas.get(fecha_str, 0)
             
-            # Si encontramos una fecha vacía, la usamos inmediatamente
+            # Si encontramos una fecha vacía, usarla inmediatamente
             if ocupacion == 0:
-                if fecha_str != fecha_base.strftime("%Y-%m-%d"):
-                    print(f"   ↪ Ajustada a {fecha_str} (fecha vacía)")
+                print(f"   ↪ Ajustada a {fecha_str} (fecha vacía)")
                 return fecha_str
             
-            # Si no está vacía pero tiene menos pagos que lo que hemos visto, la guardamos
+            # Si no está vacía pero tiene menos pagos, guardarla como opción
             if ocupacion < menor_ocupacion and ocupacion < max_por_dia:
                 mejor_fecha = fecha_str
                 menor_ocupacion = ocupacion
-            
-            # Probar el día siguiente
-            fecha_candidata += timedelta(days=1)
-            intentos += 1
         
-        # Si no encontramos fecha vacía, usar la que tenga menos pagos
+        # Si encontramos una fecha con espacio, usarla
         if mejor_fecha:
-            print(f"   ⚠️ {mejor_fecha} (ya tiene {menor_ocupacion} pago(s), pero es la mejor opción)")
+            print(f"   ↪ Ajustada a {mejor_fecha} (tiene {menor_ocupacion} pago{'s' if menor_ocupacion > 1 else ''})")
             return mejor_fecha
         
-        # Si todas las fechas están llenas, devolver la fecha base original
-        print(f"   ⚠️ Sin fechas disponibles cercanas. Usando fecha base.")
+        # Si todos los próximos días están llenos, usar la fecha base de todos modos
+        print(f"   ⚠️ No hay fechas disponibles en los próximos {buscar_dias} días. Usando fecha base.")
         return fecha_base.strftime("%Y-%m-%d")
+    
+    def _calcular_fecha_vencimiento(self, data: dict, fecha_actual: datetime) -> date:
+        """
+        Calcula la fecha de vencimiento basándose en días o fecha específica.
+        
+        Prioridad:
+        1. Si hay fecha_vencimiento específica, usarla
+        2. Si hay dias_vencimiento, calcular desde fecha_actual
+        3. Por defecto, 30 días desde fecha_actual
+        """
+        # Prioridad 1: Fecha específica
+        fecha_vencimiento_str = data.get('fecha_vencimiento')
+        if fecha_vencimiento_str:
+            try:
+                # Intentar parsear la fecha
+                fecha_venc = datetime.strptime(fecha_vencimiento_str, "%Y-%m-%d")
+                print(f"📅 Fecha de vencimiento específica: {fecha_venc.strftime('%Y-%m-%d')}")
+                return fecha_venc.date()
+            except Exception as e:
+                print(f"⚠️ Error al parsear fecha '{fecha_vencimiento_str}': {e}")
+        
+        # Prioridad 2: Días desde hoy
+        dias_vencimiento = data.get('dias_vencimiento')
+        if dias_vencimiento and isinstance(dias_vencimiento, (int, float)) and dias_vencimiento > 0:
+            fecha_venc = fecha_actual + timedelta(days=int(dias_vencimiento))
+            print(f"📅 Vencimiento en {int(dias_vencimiento)} día(s): {fecha_venc.strftime('%Y-%m-%d')}")
+            return fecha_venc.date()
+        
+        # Por defecto: 30 días
+        fecha_venc = fecha_actual + timedelta(days=30)
+        print(f"📅 Vencimiento por defecto (30 días): {fecha_venc.strftime('%Y-%m-%d')}")
+        return fecha_venc.date()
         
     @message_handler
     async def handle_message(self, message: PaymentMessage, ctx: MessageContext) -> None:
-        fracciones = message.data['fracciones']
         monto_total = message.data['monto_total']
-        fecha_base = datetime.strptime(message.data['fecha_actual'], "%Y-%m-%d")
+        fecha_actual = datetime.strptime(message.data['fecha_actual'], "%Y-%m-%d")
         
-        # 🟢 NUEVO: Obtener fechas ya ocupadas
+        # 🔥 NUEVO: Calcular fecha de vencimiento usando el nuevo método
+        fecha_vencimiento = self._calcular_fecha_vencimiento(message.data, fecha_actual)
+        
+        # Obtener fechas ya ocupadas
         fechas_ocupadas = self._obtener_fechas_ocupadas()
         
-        # 🟢 CORRECCIÓN 1: Calcular monto por cuota con redondeo a múltiplos de 50
-        monto_fraccion_exacto = monto_total / fracciones
-        monto_fraccion_redondeado = self._redondear_pesos_colombianos(monto_fraccion_exacto)
+        # Encontrar fecha disponible (máximo 2 pagos por día, buscar en próximos 3 días)
+        fecha_pago_final = self._encontrar_fecha_disponible(
+            fecha_vencimiento,
+            fechas_ocupadas,
+            max_por_dia=2,
+            buscar_dias=3
+        )
         
-        # Ajustar la última cuota para compensar diferencias de redondeo
-        suma_cuotas = monto_fraccion_redondeado * (fracciones - 1)
-        ultima_cuota = monto_total - suma_cuotas
+        # Redondear monto
+        monto_redondeado = self._redondear_pesos_colombianos(monto_total)
         
-        # Crear lista de montos por cuota
-        montos_por_cuota = [monto_fraccion_redondeado] * (fracciones - 1) + [ultima_cuota]
-        
-        # 🟢 CORRECCIÓN 2: Distribución inteligente de fechas
-        fechas_pago = []
-        
-        for i in range(1, fracciones + 1):
-            # Calcular fecha base (30 días por cuota)
-            fecha_objetivo = fecha_base + timedelta(days=30 * i)
-            
-            # Encontrar fecha disponible cercana
-            fecha_disponible = self._encontrar_fecha_disponible(
-                fecha_objetivo.date(), 
-                fechas_ocupadas,
-                max_por_dia=3  # Máximo 3 pagos por día
-            )
-            
-            fechas_pago.append(fecha_disponible)
-            
-            # Actualizar contador para la siguiente iteración
-            fechas_ocupadas[fecha_disponible] = fechas_ocupadas.get(fecha_disponible, 0) + 1
-        
-        message.data['fechas_pago'] = fechas_pago
-        message.data['montos_por_cuota'] = montos_por_cuota
-        message.data['monto_fraccionado'] = monto_fraccion_redondeado  # Para compatibilidad
+        # Actualizar datos del mensaje
+        message.data['fechas_pago'] = [fecha_pago_final]
+        message.data['montos_por_cuota'] = [monto_redondeado]
+        message.data['monto_fraccionado'] = monto_redondeado
+        message.data['fracciones'] = 1  # Siempre es 1 ahora (una sola fecha)
         message.status = "PLANNED"
         
-        # Mostrar resumen al usuario
-        print(f"📅 Cuotas calculadas:")
-        for i, (fecha, monto) in enumerate(zip(fechas_pago, montos_por_cuota), 1):
-            print(f"   Cuota {i}: ${monto:,.0f} COP - Vence: {fecha}")
-        
-        if suma_cuotas != monto_total:
-            print(f"   ℹ️  Última cuota ajustada para compensar redondeos")
+        # Mostrar resumen
+        print(f"📅 Factura planificada:")
+        print(f"   💰 Monto: ${monto_redondeado:,.0f} COP")
+        print(f"   📆 Vencimiento: {fecha_pago_final}")
         
         await self.send_message(message, AgentId("organizador", "default"))
 
@@ -896,7 +926,7 @@ class Notificador(RoutedAgent):
             fecha_pago_original = message.data.get('fecha_pago_original')
             
             if not cuota_id:
-                 return
+                return
             
             if not fecha_pago_original:
                 fecha_pago_original = datetime.now().strftime('%Y-%m-%d')
@@ -1375,20 +1405,30 @@ def mostrar_menu():
     print("\n" + "="*70)
     print("💡 COMANDOS DISPONIBLES:")
     print("="*70)
-    print("📝 PLANIFICAR: 'Tengo factura [número] por $[monto] COP en [N] cuotas'")
-    print("💰 PAGAR:      'Pagué $[monto] COP de la factura [número]'")
-    print("💵 ABONO:      'Aboné $[monto] COP a la cuota [N] de factura [número]'")
-    print("\n🔍 CONSULTAS:")
-    print("📋 INFO:       'Consultar factura [número]' o 'Info de factura [número]'")
-    print("💳 DEUDAS:     'Ver deudas pendientes' o 'Mostrar todas las deudas'")
-    print("📈 STATS:      'Estadísticas' o 'Ver estadísticas de pagos'")
+    print("📝 PLANIFICAR (con días):")
+    print("   'Factura [número] por $[monto] COP vence en [N] días'")
+    print("   'Factura 12345 por $150000 a 15 días'")
+    print("")
+    print("📅 PLANIFICAR (con fecha específica):")
+    print("   'Factura [número] por $[monto] COP vence el [fecha]'")
+    print("   'Factura 12345 por $150000 vence el 25 de diciembre'")
+    print("   'Factura 12345 por $150000 vence el 2025-12-25'")
+    print("")
+    print("💰 PAGAR:")
+    print("   'Pagué $[monto] COP de la factura [número]'")
+    print("   'Pagué $50000 de la factura 12345'")
+    print("")
+    print("🔍 CONSULTAS:")
+    print("📋 INFO:       'Consultar factura [número]'")
+    print("💳 DEUDAS:     'Ver deudas pendientes'")
+    print("📈 STATS:      'Estadísticas'")
     print("\n🛠️  UTILIDADES:")
-    print("🧹 LIMPIAR:    'limpiar hoja' (elimina TODAS las facturas pendientes)")
-    print("\n❓ AYUDA:      Escribe 'ayuda' o 'comandos'")
-    print("🚪 SALIR:      Escribe 'salir', 'exit' o 'q'")
+    print("🧹 LIMPIAR:    'limpiar hoja' (elimina TODAS las facturas)")
+    print("\n❓ AYUDA:      'ayuda' o 'comandos'")
+    print("🚪 SALIR:      'salir' o 'exit'")
     print("="*70)
-    print("💵 NOTA: Todos los montos se redondean a múltiplos de 50 COP")
-    print("📌 TIP: El sistema prioriza fechas vacías para evitar sobrecargas")
+    print("📌 TIP: El sistema evita saturar fechas (máx 2 pagos/día)")
+    print("📌 TIP: Si una fecha está llena, busca en los próximos 3 días")
     print("="*70 + "\n")
 
 async def chatbot_loop(runtime, sheets_service):

@@ -298,7 +298,6 @@ async def procesar_mensaje(user_input: str, user_id: str):
 def formatear_respuesta_procesada(user_input: str, console_output: str, user_id: str):
     """Extrae información del console output y la formatea usando el Sheets del usuario."""
     
-    # 🔥 Obtener el Sheets ID específico del usuario
     user_sheets_id = get_user_sheets_id(user_id)
     if not user_sheets_id:
         user_sheets_id = main.SPREADSHEET_ID
@@ -306,7 +305,7 @@ def formatear_respuesta_procesada(user_input: str, console_output: str, user_id:
     if not console_output or len(console_output.strip()) < 10:
         print(f"⚠️ ADVERTENCIA: Output insuficiente")
         user_lower = user_input.lower()
-        if any(word in user_lower for word in ['factura', 'pagar', 'pagué', 'abono', 'cuota']):
+        if any(word in user_lower for word in ['factura', 'pagar', 'pagué', 'abono', 'vence']):
             sheets_url = f"https://docs.google.com/spreadsheets/d/{user_sheets_id}"
             return ("⚠️ Error en procesamiento", 
                     "<strong>⚠️ El sistema no pudo procesar tu solicitud</strong><br><br>"
@@ -322,7 +321,7 @@ def formatear_respuesta_procesada(user_input: str, console_output: str, user_id:
     links_html = f'<br><br>📊 <a href="{sheets_url}" target="_blank" class="sheets-link">📄 Abrir tu Google Sheets</a> <a href="{calendar_url}" target="_blank" class="sheets-link" style="background: #ea4335;">📅 Abrir Google Calendar</a>'
     
     # Detectar tipo de operación
-    es_planificar = 'Planificación completada' in console_output or 'registrada en Google Sheets' in console_output
+    es_planificar = 'Factura planificada' in console_output or 'registrada en Google Sheets' in console_output
     es_pago = any(x in console_output for x in ['Pago procesado', 'cuota(s) afectada', 'PAGADA COMPLETAMENTE'])
     es_consulta = 'INFORMACIÓN DE FACTURA' in console_output or 'DEUDAS PENDIENTES' in console_output
     
@@ -331,43 +330,28 @@ def formatear_respuesta_procesada(user_input: str, console_output: str, user_id:
                 "<strong>⚠️ El servicio de IA está temporalmente sobrecargado</strong><br><br>"
                 "Por favor, espera 1-2 minutos y vuelve a intentar." + links_html)
     
-    # PLANIFICAR
+    # PLANIFICAR (actualizado para mostrar una sola fecha)
     if es_planificar:
         factura_match = re.search(r'Factura (\d+)', console_output)
-        cuotas_match = re.search(r'registrada.*?\((\d+) cuota', console_output)
+        monto_match = re.search(r'Monto:\s*\$?([\d,]+)\s*COP', console_output)
+        fecha_match = re.search(r'Vencimiento:\s*([\d-]+)', console_output)
         
         factura_id = factura_match.group(1) if factura_match else 'N/A'
-        num_cuotas = cuotas_match.group(1) if cuotas_match else '1'
-        
-        cuotas_info = []
-        for line in lines:
-            cuota_match = re.search(r'Cuota (\d+):\s*\$?([\d,]+)\s*COP.*?Vence:\s*([\d-]+)', line)
-            if cuota_match:
-                cuotas_info.append({
-                    'num': cuota_match.group(1), 
-                    'monto': cuota_match.group(2), 
-                    'fecha': cuota_match.group(3)
-                })
-        
-        monto_total = sum(float(c['monto'].replace(',', '')) for c in cuotas_info) if cuotas_info else 0
+        monto = monto_match.group(1) if monto_match else '0'
+        fecha_venc = fecha_match.group(1) if fecha_match else 'N/A'
         
         html = f"""<strong>✅ FACTURA PLANIFICADA EXITOSAMENTE</strong><br><br>
 <strong>📋 Información General:</strong><br>
 - Factura: <strong>{factura_id}</strong><br>
-- Monto total: <strong>${monto_total:,.0f} COP</strong><br>
-- Cuotas: <strong>{num_cuotas}</strong><br><br>"""
+- Monto total: <strong>${monto} COP</strong><br>
+- Fecha de vencimiento: <strong>{fecha_venc}</strong><br><br>
+<strong>✅ Registros actualizados:</strong><br>
+📊 Google Sheets actualizado<br>
+📧 Recordatorio creado en Google Calendar""" + links_html
         
-        if cuotas_info:
-            html += "<strong>📅 Detalle de Cuotas:</strong><br><div style='font-family:monospace;font-size:12px;margin-top:10px'>"
-            for cuota in cuotas_info:
-                html += f"<div style='padding:5px 0;border-bottom:1px solid #eee'>💳 Cuota {cuota['num']}: <strong>${cuota['monto']} COP</strong><br>📅 Vencimiento: {cuota['fecha']}</div>"
-            html += "</div>"
-        
-        html += f"<br><strong>✅ Registros actualizados:</strong><br>📊 Google Sheets actualizado con {num_cuotas} cuota(s)<br>📧 Recordatorios creados en Google Calendar" + links_html
-        
-        return f"✅ Factura {factura_id} planificada: {num_cuotas} cuotas", html
+        return f"✅ Factura {factura_id} planificada", html
     
-    # PAGAR
+    # PAGAR (sin cambios)
     elif es_pago:
         factura_match = re.search(r'Cuota\s+([\d-]+)', console_output)
         cuotas_match = re.search(r'(\d+)\s+cuota\(s\)\s+afectada', console_output)
@@ -377,22 +361,20 @@ def formatear_respuesta_procesada(user_input: str, console_output: str, user_id:
         
         html = f"""<strong>✅ PAGO REGISTRADO EXITOSAMENTE</strong><br><br>
 - Referencia: <strong>{factura_id}</strong><br>
-- Cuotas procesadas: <strong>{num_afectadas}</strong><br><br>
+- Facturas procesadas: <strong>{num_afectadas}</strong><br><br>
 <strong>✅ Registros actualizados:</strong><br>
 📊 Google Sheets actualizado<br>
 📧 Calendar actualizado""" + links_html
         
-        return f"✅ Pago registrado: {num_afectadas} cuota(s) procesada(s)", html
+        return f"✅ Pago registrado: {num_afectadas} factura(s) procesada(s)", html
     
-    # CONSULTA - 🔥 MEJORADO: Extraer solo la información de la factura
+    # CONSULTA (sin cambios)
     elif es_consulta:
-        # Buscar el bloque de información de la factura
         info_match = re.search(
             r'📋 INFORMACIÓN DE FACTURA (\d+)\s*=+\s*'
             r'💰 Monto total: \$([\d,]+) COP\s*'
             r'💵 Total pendiente: \$([\d,]+) COP\s*'
-            r'✅ Total pagado: \$([\d,]+) COP\s*'
-            r'📊 Total cuotas: (\d+) \((\d+) pagadas, (\d+) pendientes\)',
+            r'✅ Total pagado: \$([\d,]+) COP',
             console_output,
             re.MULTILINE
         )
@@ -402,30 +384,24 @@ def formatear_respuesta_procesada(user_input: str, console_output: str, user_id:
             monto_total = info_match.group(2)
             total_pendiente = info_match.group(3)
             total_pagado = info_match.group(4)
-            total_cuotas = info_match.group(5)
-            cuotas_pagadas = info_match.group(6)
-            cuotas_pendientes = info_match.group(7)
             
             html = f"""<strong>📋 INFORMACIÓN DE FACTURA {factura_id}</strong><br><br>
 <div style="background:#f8f9fa;padding:15px;border-radius:8px;font-size:14px">
 💰 <strong>Monto total:</strong> ${monto_total} COP<br>
 💵 <strong>Total pendiente:</strong> ${total_pendiente} COP<br>
-✅ <strong>Total pagado:</strong> ${total_pagado} COP<br>
-📊 <strong>Total cuotas:</strong> {total_cuotas} ({cuotas_pagadas} pagadas, {cuotas_pendientes} pendientes)
+✅ <strong>Total pagado:</strong> ${total_pagado} COP
 </div>""" + links_html
             
             return f"📋 Factura {factura_id}", html
         else:
-            # Fallback: mostrar todo el output
             return "✅ Consulta realizada", f"<pre style='font-size:12px;background:#f5f5f5;padding:10px;border-radius:5px;overflow-x:auto'>{console_output[:500]}</pre>" + links_html
     
     # Si no se detectó nada específico
-    print(f"⚠️ ADVERTENCIA: Output presente pero no se detectó operación específica")
     return ("✅ Mensaje procesado", 
             f"✅ Mensaje procesado" + links_html)
 
 
-def generar_respuesta_contextual(user_input: str, user_sheets_id: str = None):
+def generar_respuesta_contextual(user_input: str, user_sheets_id: str = ""):
     """Genera respuestas para comandos directos sin procesamiento."""
     user_lower = user_input.lower()
     
@@ -536,9 +512,9 @@ def oauth_callback():
                 <p><strong>Problema:</strong> Sesión expirada o inválida</p>
                 <p>Por favor, intenta iniciar sesión nuevamente.</p>
                 <a href="{frontend_url}" 
-                   style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
-                          background: #667eea; color: white; text-decoration: none; 
-                          border-radius: 5px;">
+                style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
+                        background: #667eea; color: white; text-decoration: none; 
+                        border-radius: 5px;">
                     🔙 Volver a la aplicación
                 </a>
             </div>
@@ -556,9 +532,9 @@ def oauth_callback():
                 <h2 style="color: #dc3545;">❌ Error de Autenticación</h2>
                 <p><strong>Problema:</strong> No se recibió código de autorización</p>
                 <a href="{frontend_url}" 
-                   style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
-                          background: #667eea; color: white; text-decoration: none; 
-                          border-radius: 5px;">
+                style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
+                        background: #667eea; color: white; text-decoration: none; 
+                        border-radius: 5px;">
                     🔙 Volver a la aplicación
                 </a>
             </div>
@@ -591,6 +567,7 @@ def oauth_callback():
         
         # MÉTODO 1: Intentar desde id_token (más rápido)
         try:
+    
             if hasattr(creds, 'id_token') and creds.id_token:
                 decoded_token = jwt.decode(creds.id_token, options={"verify_signature": False})
                 user_email = decoded_token.get('email')
@@ -657,9 +634,9 @@ def oauth_callback():
                             <li>Asegúrate de aceptar TODOS los permisos</li>
                         </ol>
                         <a href="{frontend_url}" 
-                           style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
-                                  background: #667eea; color: white; text-decoration: none; 
-                                  border-radius: 5px;">
+                        style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
+                                background: #667eea; color: white; text-decoration: none; 
+                                border-radius: 5px;">
                             🔙 Volver a la aplicación
                         </a>
                     </div>
@@ -722,9 +699,9 @@ def oauth_callback():
                     <pre style="background: #f8f9fa; padding: 15px; border-radius: 5px; overflow-x: auto; font-size: 12px;">{error_trace}</pre>
                 </details>
                 <a href="{frontend_url}" 
-                   style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
-                          background: #667eea; color: white; text-decoration: none; 
-                          border-radius: 5px;">
+                style="display: inline-block; margin-top: 20px; padding: 10px 20px; 
+                        background: #667eea; color: white; text-decoration: none; 
+                        border-radius: 5px;">
                     🔙 Volver a la aplicación
                 </a>
             </div>
