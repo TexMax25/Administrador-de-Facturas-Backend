@@ -522,16 +522,31 @@ class Organizador(RoutedAgent):
         return (
             "Eres un clasificador de intención. Analiza la petición del usuario y responde SOLO con "
             "UNA de las siguientes palabras (sin explicaciones adicionales):\n\n"
-            "PLANIFICAR - Si el usuario quiere crear/registrar una nueva factura o dividirla en cuotas\n"
-            "PAGAR - Si el usuario está reportando un pago, abono o cancelación de una deuda\n"
-            "CONSULTA_FACTURA - Si pregunta por información específica de una factura\n"
-            "CONSULTA_DEUDAS - Si pregunta por todas sus deudas o un resumen general\n"
-            "CONSULTA_ESTADISTICAS - Si pide estadísticas o métricas generales\n\n"
+            
+            "PLANIFICAR - Si el usuario quiere:\n"
+            "  • Crear, registrar, ingresar, agregar o planificar una nueva factura\n"
+            "  • Palabras clave: 'factura X por $Y', 'ingresa', 'registra', 'crea', 'planifica', 'vence en', 'vence el'\n\n"
+            
+            "PAGAR - Si el usuario está reportando un pago YA REALIZADO:\n"
+            "  • Palabras clave: 'pagué', 'abono', 'abone', 'pagó', 'cancelé'\n\n"
+            
+            "CONSULTA_FACTURA - Si pregunta por información específica de UNA factura:\n"
+            "  • Palabras clave: 'consultar factura X', 'ver factura X', 'información de X'\n\n"
+            
+            "CONSULTA_DEUDAS - Si pregunta por TODAS sus deudas o un resumen general:\n"
+            "  • Palabras clave: 'deudas pendientes', 'cuánto debo', 'mis deudas'\n\n"
+            
+            "CONSULTA_ESTADISTICAS - Si pide estadísticas o métricas generales:\n"
+            "  • Palabras clave: 'estadísticas', 'resumen', 'total pagado'\n\n"
+            
             "Ejemplos:\n"
-            "- 'ingresame la factura 15744 por $150000 en 3 cuotas' → PLANIFICAR\n"
+            "- 'Factura 12345 por $150000 vence en 15 días' → PLANIFICAR\n"
+            "- 'ingresa la factura 15744 por $150000' → PLANIFICAR\n"
+            "- 'registra factura 999 de $50000' → PLANIFICAR\n"
             "- 'pagué $50000 de la factura 123' → PAGAR\n"
-            "- 'consultar factura 456' → CONSULTA_FACTURA\n"
-            "- 'ver mis deudas' → CONSULTA_DEUDAS\n\n"
+            "- 'consultar factura 456' → CONSULTA_FACTURA\n\n"
+            
+            "IMPORTANTE: Si menciona 'factura X por $Y' sin decir 'pagué', es PLANIFICAR.\n\n"
             "Responde SOLO con la palabra clave, nada más."
         )
 
@@ -586,19 +601,20 @@ class Organizador(RoutedAgent):
             lines = intent_response.strip().upper().split('\n')
             clean_intent = "DESCONOCIDO"
 
-            for line in lines:
-                words = line.split()
-                if words and words[0] in ["PLANIFICAR", "PAGAR", "CONSULTA_FACTURA", "CONSULTA_DEUDAS", "CONSULTA_ESTADISTICAS"]:
-                    clean_intent = words[0]
-                    break
-            
-            print(f"🎯 Intención detectada: {clean_intent}")
+            # Lista de intenciones válidas
+            valid_intents = ["PLANIFICAR", "PAGAR", "CONSULTA_FACTURA", "CONSULTA_DEUDAS", "CONSULTA_ESTADISTICAS"]
 
-            if clean_intent == "DESCONOCIDO":
-                print(f"❌ No pude entender tu solicitud.")
-                print(f"💡 Ejemplo: 'Factura 12345 por $500000 en 3 cuotas'")
-                print(f"📝 Respuesta de OpenRouter: {intent_response[:200]}")
-                return
+            # Buscar en cada línea
+            for line in lines:
+                for intent_word in valid_intents:
+                    if intent_word in line:
+                        clean_intent = intent_word
+                        break
+                if clean_intent != "DESCONOCIDO":
+                    break
+
+            print(f"🎯 Intención detectada: {clean_intent}")
+            print(f"📋 Respuesta de IA: {intent_response[:100]}")
             
             # 2. Extraer datos si es necesario
             if clean_intent in ["PLANIFICAR", "PAGAR"]:
@@ -648,9 +664,11 @@ class Organizador(RoutedAgent):
                     print(f"✅ Datos extraídos correctamente:")
                     print(f"   📋 Factura: {factura_extraida}")
                     print(f"   💵 Monto: ${monto_extraido:,.0f} COP")
-                    
+
                     if clean_intent == "PLANIFICAR":
-                        print(f"   📊 Cuotas: {message.data['fracciones']}")
+                        dias = message.data.get('dias_vencimiento')
+                        fecha = message.data.get('fecha_vencimiento')
+                        print(f"   📅 Vencimiento: {'en ' + str(dias) + ' días' if dias else fecha if fecha else '30 días (default)'}")
                     
                     # Validar que tenga datos mínimos
                     if factura_extraida == 'N/A' or monto_extraido == 0:
