@@ -25,7 +25,6 @@ YOUR_SITE_URL = "https://mi-organizador-pagos.com"
 YOUR_SITE_NAME = "Organizador Pagos AutoGen" 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODELS_FALLBACK = [
-    "google/gemini-2.0-flash-exp:free",       # Gemini 2.0 (experimental pero potente)
     "tngtech/deepseek-r1t2-chimera:free",     # DeepSeek (muy bueno para razonamiento)
     "z-ai/glm-4.5-air:free",                  # GLM-4 (bueno en español)
     "nvidia/nemotron-nano-12b-v2-vl:free",    # Nvidia Nemotron (rápido)
