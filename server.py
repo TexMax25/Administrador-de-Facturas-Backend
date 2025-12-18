@@ -221,6 +221,11 @@ async def procesar_mensaje(user_input: str, user_id: str):
     print(f"📝 Input: '{user_input}'")
     print(f"👤 Usuario: {user_id[:8]}")
     print(f"{'='*70}")
+
+    print(f"🔍 Verificando main.py...")
+    print(f"   Organizador class: {main.Organizador}")
+    print(f"   Handle message: {main.Organizador.handle_message}")
+    print(f"{'='*70}")
     
     user_lower = user_input.lower()
     comandos_directos = ['ayuda', 'help', 'sheets', 'calendar']
