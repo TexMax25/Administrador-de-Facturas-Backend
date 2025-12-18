@@ -614,28 +614,40 @@ class Organizador(RoutedAgent):
                     print(f"❌ OpenRouter falló: {intent_response}")
                     return message.model_copy(update={"status": "ERROR"})
                 
+                
                 # 2. Limpieza de intención CON DEBUG
                 print(f"🔄 Paso 2: Limpiando respuesta...")
-                
-                # Normalizar la respuesta
-                intent_response_clean = intent_response.strip().upper()
-                lines = intent_response_clean.split('\n')
-                
-                print(f"📊 Análisis de líneas:")
-                for i, line in enumerate(lines):
-                    print(f"  Línea {i}: '{line}'")
-                
+
+                # 🔥 NUEVA ESTRATEGIA: Buscar palabras clave en cualquier parte
+                intent_response_upper = intent_response.upper()
+
+                # Mapeo de palabras clave a intenciones
+                intent_keywords = {
+                    "PLANIFICAR": ["PLANIFICAR", "CREAR", "REGISTRAR", "INGRESAR"],
+                    "PAGAR": ["PAGAR", "PAGO", "ABONO"],
+                    "CONSULTA_FACTURA": ["CONSULTA_FACTURA", "VER FACTURA", "INFO"],
+                    "CONSULTA_DEUDAS": ["CONSULTA_DEUDAS", "DEUDAS", "DEBO"],
+                    "CONSULTA_ESTADISTICAS": ["ESTADISTICAS", "STATS", "RESUMEN"]
+                }
+
                 clean_intent = "DESCONOCIDO"
-                valid_intents = ["PLANIFICAR", "PAGAR", "CONSULTA_FACTURA", "CONSULTA_DEUDAS", "CONSULTA_ESTADISTICAS"]
-                
-                # 🔥 NUEVO: Buscar en TODA la respuesta, no solo línea por línea
-                for intent_word in valid_intents:
-                    if intent_word in intent_response_clean:
-                        clean_intent = intent_word
-                        print(f"   ✅ Encontrado '{intent_word}' en respuesta completa")
+
+                # Buscar cualquier palabra clave en la respuesta
+                for intent_name, keywords in intent_keywords.items():
+                    if any(keyword in intent_response_upper for keyword in keywords):
+                        clean_intent = intent_name
+                        print(f"✅ Intención detectada: {clean_intent}")
                         break
-                
-                print(f"\n🎯 Intención final detectada: {clean_intent}")
+
+                # 🔥 FALLBACK: Si menciona "factura" + "monto" en el input = PLANIFICAR
+                if clean_intent == "DESCONOCIDO":
+                    user_lower = message.user_input.lower()
+                    if "factura" in user_lower and ("$" in user_lower or "pesos" in user_lower):
+                        if "pagué" not in user_lower and "pagó" not in user_lower:
+                            clean_intent = "PLANIFICAR"
+                            print(f"🔄 Fallback: Detectado como PLANIFICAR por contexto")
+
+                print(f"🎯 Intención final: {clean_intent}")
 
                 if clean_intent == "DESCONOCIDO":
                     print(f"\n❌ No se pudo identificar la intención")
