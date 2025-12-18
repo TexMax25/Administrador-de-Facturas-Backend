@@ -578,12 +578,10 @@ class Organizador(RoutedAgent):
             "Ahora extrae del siguiente texto y devuelve SOLO el JSON:"
         )
 
-    # En main.py, REEMPLAZA el método handle_message del Organizador con esto:
-
     @message_handler
     async def handle_message(self, message: PaymentMessage, ctx: MessageContext) -> PaymentMessage:
         """
-        🔥 CAMBIO CRÍTICO: Ahora retorna explícitamente el mensaje procesado
+        🔥 Versión con debug mejorado para diagnosticar problemas de parsing
         """
         try:
             print(f"\n{'='*60}")
@@ -596,54 +594,78 @@ class Organizador(RoutedAgent):
                 
                 try:
                     intent_response = await call_openrouter(self._intent_prompt, message.user_input)
-                    print(f"📥 Respuesta de OpenRouter: '{intent_response[:200]}'")
+                    
+                    # 🔥 DEBUG: Mostrar respuesta COMPLETA
+                    print(f"\n{'='*60}")
+                    print(f"📥 RESPUESTA COMPLETA DE OPENROUTER:")
+                    print(f"{'='*60}")
+                    print(intent_response)
+                    print(f"{'='*60}")
+                    print(f"Tipo: {type(intent_response)}")
+                    print(f"Longitud: {len(intent_response)} caracteres")
+                    print(f"{'='*60}\n")
+                    
                 except Exception as e:
                     print(f"❌ Error llamando a OpenRouter: {e}")
                     import traceback
                     traceback.print_exc()
-                    # 🔥 Retornar mensaje con error
                     return message.model_copy(update={"status": "ERROR"})
                 
                 if intent_response.startswith("ERROR:"):
                     print(f"❌ OpenRouter falló: {intent_response}")
                     return message.model_copy(update={"status": "ERROR"})
                 
-                # Limpieza de intención
+                # 2. Limpieza de intención CON DEBUG
                 print(f"🔄 Paso 2: Limpiando respuesta...")
-                lines = intent_response.strip().upper().split('\n')
+                
+                # Normalizar la respuesta
+                intent_response_clean = intent_response.strip().upper()
+                lines = intent_response_clean.split('\n')
+                
+                print(f"📊 Análisis de líneas:")
+                for i, line in enumerate(lines):
+                    print(f"  Línea {i}: '{line}'")
+                
                 clean_intent = "DESCONOCIDO"
-
                 valid_intents = ["PLANIFICAR", "PAGAR", "CONSULTA_FACTURA", "CONSULTA_DEUDAS", "CONSULTA_ESTADISTICAS"]
                 
-                for line in lines:
-                    print(f"   🔍 Analizando línea: '{line[:50]}'")
-                    for intent_word in valid_intents:
-                        if intent_word in line:
-                            clean_intent = intent_word
-                            print(f"   ✅ Encontrado: {intent_word}")
-                            break
-                    if clean_intent != "DESCONOCIDO":
+                # 🔥 NUEVO: Buscar en TODA la respuesta, no solo línea por línea
+                for intent_word in valid_intents:
+                    if intent_word in intent_response_clean:
+                        clean_intent = intent_word
+                        print(f"   ✅ Encontrado '{intent_word}' en respuesta completa")
                         break
                 
-                print(f"🎯 Intención detectada: {clean_intent}")
+                print(f"\n🎯 Intención final detectada: {clean_intent}")
 
                 if clean_intent == "DESCONOCIDO":
-                    print(f"❌ No pude entender tu solicitud.")
-                    print(f"💡 Ejemplo: 'Factura 12345 por $500000 vence en 15 días'")
+                    print(f"\n❌ No se pudo identificar la intención")
+                    print(f"💡 Respuesta de IA no contenía ninguna palabra clave válida")
+                    print(f"💡 Palabras esperadas: {valid_intents}")
+                    print(f"💡 Respuesta recibida: '{intent_response[:200]}'")
                     return message.model_copy(update={"status": "ERROR"})
                 
-                # 2. Extraer datos si es necesario
+                # 3. Extraer datos si es necesario
                 if clean_intent in ["PLANIFICAR", "PAGAR"]:
-                    print(f"🔄 Paso 3: Extrayendo datos del mensaje...")
+                    print(f"\n🔄 Paso 3: Extrayendo datos del mensaje...")
                     
                     try:
                         data_json_str = await call_openrouter(
                             self._data_extraction_prompt, 
                             message.user_input
                         )
-                        print(f"📥 Datos extraídos: '{data_json_str[:300]}'")
+                        
+                        # 🔥 DEBUG: Mostrar respuesta de extracción
+                        print(f"\n{'='*60}")
+                        print(f"📥 RESPUESTA DE EXTRACCIÓN DE DATOS:")
+                        print(f"{'='*60}")
+                        print(data_json_str[:500])
+                        print(f"{'='*60}\n")
+                        
                     except Exception as e:
                         print(f"❌ Error extrayendo datos: {e}")
+                        import traceback
+                        traceback.print_exc()
                         return message.model_copy(update={"status": "ERROR"})
                     
                     if data_json_str.startswith("ERROR:"):
@@ -651,8 +673,10 @@ class Organizador(RoutedAgent):
                         return message.model_copy(update={"status": "ERROR"})
                     
                     try:
+                        # Limpiar respuesta
                         data_json_clean = data_json_str.strip()
                         
+                        # Si viene con ```json, limpiarlo
                         if '```' in data_json_clean:
                             import re
                             json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', data_json_clean, re.DOTALL)
@@ -663,33 +687,50 @@ class Organizador(RoutedAgent):
                                 if json_match:
                                     data_json_clean = json_match.group(0)
                         
+                        # Reemplazar comillas simples por dobles
                         data_json_clean = data_json_clean.replace("'", '"')
                         
-                        print(f"🔄 Paso 4: Parseando JSON limpio...")
+                        print(f"🔄 JSON limpio a parsear:")
+                        print(data_json_clean[:300])
+                        
+                        # Parsear JSON
                         data_ext = json.loads(data_json_clean)
-                        print(f"✅ JSON parseado: {data_ext}")
+                        print(f"✅ JSON parseado exitosamente: {data_ext}")
                         
                         message.data.update(data_ext)
                         
                         if clean_intent == "PLANIFICAR":
                             message.data["monto_pendiente"] = message.data["monto_total"]
                         
+                        # Validar datos extraídos
                         factura_extraida = message.data['numero_factura']
                         monto_extraido = message.data.get('monto_total' if clean_intent == "PLANIFICAR" else 'monto_abono')
                         
-                        print(f"✅ Datos extraídos correctamente:")
+                        print(f"\n✅ Datos extraídos correctamente:")
                         print(f"   📋 Factura: {factura_extraida}")
                         print(f"   💵 Monto: ${monto_extraido:,.0f} COP")
                         
+                        if clean_intent == "PLANIFICAR":
+                            dias = message.data.get('dias_vencimiento')
+                            fecha = message.data.get('fecha_vencimiento')
+                            print(f"   📅 Vencimiento: {'en ' + str(dias) + ' días' if dias else fecha if fecha else '30 días (default)'}")
+                        
+                        # Validar que tenga datos mínimos
                         if factura_extraida == 'N/A' or monto_extraido == 0:
-                            print(f"❌ Datos incompletos.")
+                            print(f"\n❌ Datos incompletos detectados")
+                            print(f"   Factura: {factura_extraida}")
+                            print(f"   Monto: {monto_extraido}")
+                            print(f"💡 Verifica que el mensaje contenga número de factura y monto")
                             return message.model_copy(update={"status": "ERROR"})
                     
                     except json.JSONDecodeError as e:
                         print(f"⚠️ Error al parsear JSON: {e}")
+                        print(f"📝 String que intentó parsear: {data_json_str[:500]}")
                         return message.model_copy(update={"status": "ERROR"})
                     except Exception as e:
                         print(f"⚠️ Error inesperado en extracción: {e}")
+                        import traceback
+                        traceback.print_exc()
                         return message.model_copy(update={"status": "ERROR"})
                 
                 elif clean_intent in ["CONSULTA_FACTURA", "CONSULTA_DEUDAS", "CONSULTA_ESTADISTICAS"]:
@@ -706,8 +747,8 @@ class Organizador(RoutedAgent):
                     }
                     message.data['consulta_tipo'] = consulta_map[clean_intent]
                 
-                # 3. Crear mensaje actualizado y enrutar
-                print(f"🔄 Paso 5: Creando mensaje para enviar...")
+                # 4. Crear mensaje actualizado y enrutar
+                print(f"\n🔄 Paso 4: Creando mensaje para enviar...")
                 next_message = message.model_copy(update={
                     "intent": clean_intent,
                     "status": "INTENT_CLASSIFIED"
@@ -725,27 +766,22 @@ class Organizador(RoutedAgent):
                     await self.send_message(next_message, AgentId("consultor", "default"))
                 
                 print(f"✅ Mensaje enviado correctamente")
-                
-                # 🔥 RETORNAR el mensaje procesado
                 return next_message
 
             elif message.status == "PLANNED":
                 print(f"✅ Planificación completada: {message.data.get('fracciones')} cuota(s) creada(s)")
                 await self.send_message(message, AgentId("notificador", "default"))
                 await self.send_message(message, AgentId("registrador", "default"))
-                # 🔥 RETORNAR el mensaje
                 return message
             
-            # 🔥 Por si acaso, retornar el mensaje original
             return message
         
         except Exception as e:
-            print(f"❌ ERROR CRÍTICO en Organizador.handle_message:")
+            print(f"\n❌ ERROR CRÍTICO en Organizador.handle_message:")
             print(f"   Tipo: {type(e).__name__}")
             print(f"   Mensaje: {str(e)}")
             import traceback
             traceback.print_exc()
-            # 🔥 Retornar mensaje con error
             return message.model_copy(update={"status": "ERROR"})
 
 @default_subscription
